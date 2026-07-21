@@ -1,0 +1,29 @@
+# CI for ikigai-encrypt. Unlike ikigai-sign, this crate is NATIVE-focused: the `age`
+# X25519 stack runs on the edge and the owner's devices (encrypt on the edge, decrypt
+# on your laptops), never in the browser — the visitor's page doesn't do the crypto.
+# So there's no wasm face to guard; native fmt · clippy --all-targets -D warnings · test.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy (all targets)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test
