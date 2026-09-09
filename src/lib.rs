@@ -1,16 +1,16 @@
 //! `ikigai-encrypt` — public-key encryption as an ikigai module, the **dual of
-//! [`ikigai-sign`]**. Signing proves *who*; encryption hides *what*.
+//! `ikigai-sign`**. Signing proves *who*; encryption hides *what*.
 //!
 //! Two endpoints, over the [`age`](https://age-encryption.org) format (X25519
 //! recipients, ChaCha20-Poly1305, ASCII armor):
 //!
-//! - [`urn:encrypt:encrypt`](encrypt) — **open** (anyone may seal to a public key,
+//! - `urn:encrypt:encrypt` — **open** (anyone may seal to a public key,
 //!   which is exactly how an untrusted dropper encrypts a request to an inbox owner).
 //!   Reads the plaintext as `in` (or piped `content`) and one or more recipient public
 //!   keys from the `to` resource; emits ASCII-armored age ciphertext. **Multi-recipient**:
 //!   the `to` resource may list several `age1…` keys (one per line), so an inbox can be
 //!   sealed to *all* of an owner's devices at once and any of them opens it.
-//! - [`urn:encrypt:decrypt`](decrypt) — requires **`urn:cap:decrypt`**, since it needs
+//! - `urn:encrypt:decrypt` — requires **`urn:cap:decrypt`**, since it needs
 //!   the private key. Reads the armored ciphertext as `in` and the owner's identity from
 //!   the `key` resource; emits the plaintext.
 //!
