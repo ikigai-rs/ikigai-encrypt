@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-encrypt"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Public-key encryption module for ikigai — the dual of ikigai-sign. `urn:encrypt:encrypt` (open) seals bytes to one or more recipient public keys (age / X25519); `urn:encrypt:decrypt` (requires `urn:cap:decrypt`) opens them with a kernel-resolved identity. Keys are age recipients/identities resolved through the kernel — no keygen here (that is the secret module's job). Multi-recipient so an inbox can be encrypted to all of an owner's devices at once."
@@ -24,3 +24,7 @@ age = { version = "0.11", default-features = false, features = ["armor"] }
 
 [dev-dependencies]
 futures = "0.3" # block_on for the async endpoint tests
+# The module recipe as one test (`tests/conformance.rs`): walks every bound endpoint and
+# reports every violation at once. Its own floor on ikigai-core (0.1.67) is above the
+# library's; the library's pin stays the true minimum of the API the LIBRARY uses.
+ikigai-conformance = "0.1.0"

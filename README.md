@@ -42,8 +42,39 @@ ciphertext.
 
 Keys are `age` recipients (`age1…`) and identities (`AGE-SECRET-KEY-1…`), resolved
 **through the kernel** (`to=`/`key=` are resource URIs — a `urn:file:` or a
-`urn:secret:*`). **This crate never mints keys** — generating and storing them is the
+`urn:secret:*` — never the key by value; an error never echoes what it was given). **This crate never mints keys** — generating and storing them is the
 secret module's job, exactly as `ikigai-sign` leaves keygen to the secret module.
+
+## Caching
+
+- **`urn:encrypt:encrypt` is never cacheable.** age mints a fresh ephemeral key per
+  call, so two sealings of one plaintext to one recipient are different bytes; a
+  cached ciphertext would be a function of nothing. Every encrypt is `Expiry::Always`.
+- **`urn:encrypt:decrypt` is exactly as cacheable as its key.** A pure function of the
+  ciphertext and the identity, marked cacheable, holding no key material and naming
+  no thread of its own — the kernel folds the `key` resource's expiry and golden
+  threads into the plaintext. Serve the identity under a thread (an `ikigai-fs`
+  cacheable mount, `urn:file:`) and the plaintext is cached under that thread; serve
+  it uncacheable (a secret backend read on every call, `urn:secret:*`) and every
+  decryption recomputes. The cache keys on the capability fingerprint, so a caller
+  without `urn:cap:decrypt` never sees a cached plaintext.
+- **A cached plaintext outlives a key rotation until the cut.** This crate watches
+  nothing: after the operator rotates an identity that was served under a thread, the
+  plaintext opened with the OLD key is served from the cache — and the rotated key is
+  not even read — until the keystore cuts the thread it declared (the key's own IRI).
+  A `urn:secret:*` identity never has this window (it is live); a `urn:file:` one does,
+  and closing it is the filesystem watcher's job, not this module's.
+
+## Conformance
+
+Passes [`ikigai-conformance`](https://github.com/ikigai-rs/ikigai-conformance)
+(`tests/conformance.rs`): every check, no opt-outs, over both keystore kinds. Pinned
+by hand beyond the suite: every encrypt is live (and declaring it cacheable draws the
+finding), the rotation window above, a missing `in`/`to`/`key` is a typed
+`MissingArgument` before any key is read, an ungranted caller is refused before the
+identity is consulted, and no face — description, catalog, action manifold, `Meta`,
+or any error text a caller can provoke (including passing the identity itself as
+`key=`) — carries the private key.
 
 ## Using it from a host
 

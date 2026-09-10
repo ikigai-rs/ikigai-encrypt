@@ -16,8 +16,15 @@
 //!
 //! Keys are resolved **through the kernel** (`inv.source` on the URI, cap-scoped) — an
 //! `age` recipient (`age1…`) or identity (`AGE-SECRET-KEY-1…`) from a `urn:file:` or a
-//! future `urn:secret:*`. **No keygen here** — minting keys is the secret module's job,
+//! `urn:secret:*`. **No keygen here** — minting keys is the secret module's job,
 //! exactly as `ikigai-sign` leaves keygen to the secret module.
+//!
+//! **Caching.** Encryption is never cacheable (a fresh ephemeral key per call makes
+//! every ciphertext different bytes); decryption is a pure function of ciphertext and
+//! identity, marked cacheable, and inherits its EFFECTIVE cacheability from the
+//! identity resource — cached under the keystore's thread, or live over a live
+//! keystore. Neither endpoint holds key material, watches anything, or names a
+//! thread of its own. `tests/conformance.rs` pins all of it.
 #![forbid(unsafe_code)]
 
 use age::armor::{ArmoredWriter, Format};
@@ -54,24 +61,30 @@ fn armored(body: String) -> Representation {
 }
 
 /// Read the plaintext/ciphertext input: the `in` argument, falling back to piped `content`.
-fn read_input<'a>(inv: &'a Invocation<'_>, who: &str) -> Result<&'a str> {
+/// Neither present is the typed `MissingArgument` naming `in` — the declared required
+/// input — so a validator and a caller see the contract, not a prose complaint.
+fn read_input<'a>(inv: &'a Invocation<'_>) -> Result<&'a str> {
     inv.inline_str("in")
         .or_else(|_| inv.inline_str("content"))
-        .map_err(|_| {
-            Error::Endpoint(format!(
-                "{who}: pass the bytes as `in` (or piped `content`)"
-            ))
-        })
+        .map_err(|_| Error::MissingArgument("in".to_string()))
 }
 
 /// Resolve the `key`/`to` argument to its bytes THROUGH the kernel (cap-scoped), as a string.
+///
+/// The argument is an IRI, never key material — and the error for a non-IRI does NOT
+/// echo the value: a caller who passes the identity itself as `key=` would otherwise
+/// read their private key back in the error text, which travels through logs, traces
+/// and MCP replies.
 async fn resolve_key(inv: &Invocation<'_>, arg: &str, who: &str) -> Result<String> {
     let uri = inv
         .inline_str(arg)
         .map_err(|_| Error::MissingArgument(arg.to_string()))?;
-    let iri = Iri::parse(uri).map_err(|e| Error::InvalidArgument {
+    let iri = Iri::parse(uri).map_err(|_| Error::InvalidArgument {
         name: arg.to_string(),
-        detail: format!("{who}: invalid key IRI `{uri}`: {e}"),
+        detail: format!(
+            "{who}: `{arg}` must be an IRI naming a key resource (a `urn:file:`, a \
+             `urn:secret:*`); the key itself is never passed by value"
+        ),
     })?;
     let repr = inv.issue(Request::new(Verb::Source, iri)).await?;
     String::from_utf8(repr.bytes)
@@ -84,7 +97,7 @@ pub struct Encrypt;
 #[async_trait]
 impl Endpoint for Encrypt {
     async fn invoke(&self, inv: &Invocation<'_>) -> Result<Representation> {
-        let plaintext = read_input(inv, "urn:encrypt:encrypt")?.as_bytes().to_vec();
+        let plaintext = read_input(inv)?.as_bytes().to_vec();
         let key_text = resolve_key(inv, "to", "urn:encrypt:encrypt").await?;
 
         // One or more `age1…` recipients (one per non-empty line) → multi-recipient encrypt.
@@ -123,7 +136,14 @@ impl Endpoint for Encrypt {
 
         let text = String::from_utf8(armored_out)
             .map_err(|_| Error::Endpoint("urn:encrypt:encrypt: armor not UTF-8".to_string()))?;
-        Ok(armored(text).cacheable())
+        // NOT cacheable, by construction: age mints a fresh ephemeral X25519 key and
+        // file key per call, so two encryptions of the same plaintext to the same
+        // recipients are different bytes. A cached ciphertext would be a function of
+        // nothing — served forever, byte-identical, under whatever thread the
+        // recipient resource carried — and `Expiry::Always` is the only honest
+        // expiry for a non-deterministic result. (Correctness would survive a cache;
+        // the contract "every call is a fresh sealing" would not.)
+        Ok(armored(text))
     }
 
     fn name(&self) -> &str {
@@ -147,9 +167,16 @@ impl Endpoint for Encrypt {
                     .summary("the bytes to encrypt (positional or piped as `content`)")
                     .class(XSD_STRING),
             )
+            // ONE resource IRI, whose bytes list one or more `age1…` recipients (one per
+            // line). The list lives inside the resource, so the argument itself is a single
+            // reference and `rdfs:Resource` is its true class; a by-value recipient LIST
+            // would have no ArgSpec spelling (conformance PENDING #15) and is not offered.
             .input(
                 ArgSpec::new("to")
-                    .summary("recipient public-key resource (one or more age1… recipients)")
+                    .summary(
+                        "recipient public-key resource: ONE IRI whose bytes list one or more \
+                         age1… recipients, one per line",
+                    )
                     .class(RDFS_RESOURCE),
             )
             .output("text/plain;charset=utf-8")
@@ -167,7 +194,7 @@ impl Endpoint for Decrypt {
                 "urn:encrypt:decrypt requires the {CAP_DECRYPT} capability"
             )));
         }
-        let ciphertext = read_input(inv, "urn:encrypt:decrypt")?.to_string();
+        let ciphertext = read_input(inv)?.to_string();
         let key_text = resolve_key(inv, "key", "urn:encrypt:decrypt").await?;
         let identity = Identity::from_str(key_text.trim())
             .map_err(|e| Error::Endpoint(format!("urn:encrypt:decrypt: bad age identity: {e}")))?;
@@ -182,10 +209,18 @@ impl Endpoint for Decrypt {
             .read_to_end(&mut plaintext)
             .map_err(|e| Error::Endpoint(format!("urn:encrypt:decrypt: read: {e}")))?;
 
-        Ok(Representation::new(
-            ReprType::new("application/octet-stream"),
-            plaintext,
-        ))
+        // A pure function of the ciphertext and the identity: the same two inputs
+        // open to the same bytes every time. Marked cacheable and declaring no
+        // thread of its own — the kernel folds the `key` sub-resolution's expiry and
+        // golden threads into this result, so the plaintext is EXACTLY as cacheable
+        // as the identity resource it was opened with: cached under the keystore's
+        // thread when the key is served under one (a `urn:file:` mount), and
+        // recomputed on every call when the key is served live (a secret backend).
+        // The cache keys on the capability fingerprint, so a caller without
+        // `urn:cap:decrypt` never sees a cached plaintext. What this cannot do is
+        // notice a rotation: a plaintext cached under a key thread is served until
+        // the keystore CUTS that thread (README, "Caching").
+        Ok(Representation::new(ReprType::new("application/octet-stream"), plaintext).cacheable())
     }
 
     fn name(&self) -> &str {
