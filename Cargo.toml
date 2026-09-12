@@ -27,4 +27,4 @@ futures = "0.3" # block_on for the async endpoint tests
 # The module recipe as one test (`tests/conformance.rs`): walks every bound endpoint and
 # reports every violation at once. Its own floor on ikigai-core (0.1.67) is above the
 # library's; the library's pin stays the true minimum of the API the LIBRARY uses.
-ikigai-conformance = "0.1.0"
+ikigai-conformance = "0.2.0"
