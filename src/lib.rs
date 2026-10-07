@@ -6,13 +6,13 @@
 //!
 //! - `urn:encrypt:encrypt` — **open** (anyone may seal to a public key,
 //!   which is exactly how an untrusted dropper encrypts a request to an inbox owner).
-//!   Reads the plaintext as `in` (or piped `content`) and one or more recipient public
+//!   Reads the plaintext (any bytes) as `in` (or piped `content`) and one or more recipient public
 //!   keys from the `to` resource; emits ASCII-armored age ciphertext. **Multi-recipient**:
 //!   the `to` resource may list several `age1…` keys (one per line), so an inbox can be
 //!   sealed to *all* of an owner's devices at once and any of them opens it.
 //! - `urn:encrypt:decrypt` — requires **`urn:cap:decrypt`**, since it needs
-//!   the private key. Reads the armored ciphertext as `in` and the owner's identity from
-//!   the `key` resource; emits the plaintext.
+//!   the private key. Reads the age ciphertext (armored or binary) as `in` and the
+//!   owner's identity file from the `key` resource; emits the plaintext.
 //!
 //! Keys are resolved **through the kernel** (`inv.source` on the URI, cap-scoped) — an
 //! `age` recipient (`age1…`) or identity (`AGE-SECRET-KEY-1…`) from a `urn:file:` or a
@@ -31,7 +31,7 @@ use age::armor::{ArmoredWriter, Format};
 use age::x25519::{Identity, Recipient};
 use async_trait::async_trait;
 use ikigai_core::{
-    ArgSpec, Description, Endpoint, EndpointSpace, Error, Exact, Invocation, Iri, ReprType,
+    ArgRef, ArgSpec, Description, Endpoint, EndpointSpace, Error, Exact, Invocation, Iri, ReprType,
     Representation, Request, Result, Verb,
 };
 use std::io::{Read, Write};
@@ -60,35 +60,155 @@ fn armored(body: String) -> Representation {
     )
 }
 
-/// Read the plaintext/ciphertext input: the `in` argument, falling back to piped `content`.
-/// Neither present is the typed `MissingArgument` naming `in` — the declared required
-/// input — so a validator and a caller see the contract, not a prose complaint.
-fn read_input<'a>(inv: &'a Invocation<'_>) -> Result<&'a str> {
-    inv.inline_str("in")
-        .or_else(|_| inv.inline_str("content"))
-        .map_err(|_| Error::MissingArgument("in".to_string()))
+/// Refuse every verb but Source. Both endpoints declare Source (and Meta, which the
+/// KERNEL answers from the description without entering the endpoint), and the kernel
+/// dispatches an undeclared verb all the same; before this check an `Exists`, `Sink`
+/// or `Delete` on `urn:encrypt:encrypt` sealed, and a `Sink` would then have cut the
+/// endpoint's own thread. Core has no typed "verb not supported" error, so this is
+/// the ecosystem's spelling of one (`ikigai-ledger`, `ikigai-log`).
+fn source_only(who: &str, verb: Verb) -> Result<()> {
+    if verb == Verb::Source {
+        Ok(())
+    } else {
+        Err(Error::Endpoint(format!(
+            "`{who}` answers only Source; it does not answer {verb:?}"
+        )))
+    }
 }
 
-/// Resolve the `key`/`to` argument to its bytes THROUGH the kernel (cap-scoped), as a string.
+/// Where the input bytes come from: `in`, or, only when `in` is ABSENT, the pipe's
+/// spelling of it, `content`. A present `in` is never passed over for `content`,
+/// whatever it holds (before this, a non-UTF-8 `in` fell through to `content` and the
+/// module sealed or opened the wrong bytes, silently). Neither present is the typed
+/// `MissingArgument` naming `in`, the declared required input. Looks at nothing but
+/// the request, so a call refused here has read nothing.
+fn input_arg<'a>(inv: &'a Invocation<'_>) -> Result<(&'static str, &'a ArgRef)> {
+    ["in", "content"]
+        .into_iter()
+        .find_map(|name| inv.request.args.get(name).map(|arg| (name, arg)))
+        .ok_or_else(|| Error::MissingArgument("in".to_string()))
+}
+
+/// The input's BYTES, whatever they are: plaintext is any bytes, and ciphertext is
+/// armored or binary age. An inline value is the bytes; a reference is dereferenced
+/// through the kernel (cap-scoped, and recorded as a dependency, so a plaintext opened
+/// from a ciphertext resource is no more cacheable than that resource).
+async fn input_bytes(inv: &Invocation<'_>, who: &str) -> Result<Vec<u8>> {
+    let (name, arg) = input_arg(inv)?;
+    match arg {
+        ArgRef::Inline(bytes) => Ok(bytes.clone()),
+        ArgRef::Reference(iri) => inv
+            .source(iri)
+            .await
+            .map(|repr| repr.bytes)
+            .map_err(|e| sub_failure(who, name, iri, e)),
+        ArgRef::Content(_) => Err(not_content_addressed(who, name)),
+    }
+}
+
+/// The refusal for an `ArgRef::Content` argument. An invocation carries no content
+/// store, so an endpoint has no way to read a content-addressed value; saying so beats
+/// the `MissingArgument` it used to be reported as.
+fn not_content_addressed(who: &str, name: &str) -> Error {
+    Error::InvalidArgument {
+        name: name.to_string(),
+        detail: format!(
+            "{who}: a content-addressed value cannot be read here (an invocation carries no \
+             content store); pass `{name}` inline or by reference"
+        ),
+    }
+}
+
+/// The IRI of the `key`/`to` resource. Looks at nothing but the request.
 ///
-/// The argument is an IRI, never key material — and the error for a non-IRI does NOT
-/// echo the value: a caller who passes the identity itself as `key=` would otherwise
-/// read their private key back in the error text, which travels through logs, traces
-/// and MCP replies.
-async fn resolve_key(inv: &Invocation<'_>, arg: &str, who: &str) -> Result<String> {
-    let uri = inv
-        .inline_str(arg)
-        .map_err(|_| Error::MissingArgument(arg.to_string()))?;
-    let iri = Iri::parse(uri).map_err(|_| Error::InvalidArgument {
+/// Inline, the argument is the IRI's text; by reference (`ArgRef::Reference`, core's
+/// own spelling of "another resolvable resource", and the argument's declared class
+/// is `rdfs:Resource`) it IS the IRI, and resolves exactly as the by-name spelling
+/// does. Anything present that is not an IRI is an `InvalidArgument` naming the
+/// argument, never `MissingArgument`. The error does NOT echo the value: a caller who
+/// passes the identity itself as `key=` would otherwise read their private key back
+/// in the error text, which travels through logs, traces and MCP replies.
+fn key_iri(inv: &Invocation<'_>, arg: &str, who: &str) -> Result<Iri> {
+    let not_an_iri = || Error::InvalidArgument {
         name: arg.to_string(),
         detail: format!(
             "{who}: `{arg}` must be an IRI naming a key resource (a `urn:file:`, a \
              `urn:secret:*`); the key itself is never passed by value"
         ),
-    })?;
-    let repr = inv.issue(Request::new(Verb::Source, iri)).await?;
-    String::from_utf8(repr.bytes)
-        .map_err(|_| Error::Endpoint(format!("{who}: key resource is not UTF-8 text")))
+    };
+    match inv.request.args.get(arg) {
+        None => Err(Error::MissingArgument(arg.to_string())),
+        Some(ArgRef::Reference(iri)) => Ok(iri.clone()),
+        Some(ArgRef::Inline(bytes)) => std::str::from_utf8(bytes)
+            .ok()
+            .and_then(|text| Iri::parse(text).ok())
+            .ok_or_else(not_an_iri),
+        Some(ArgRef::Content(_)) => Err(not_content_addressed(who, arg)),
+    }
+}
+
+/// Resolve the key resource THROUGH the kernel (cap-scoped), as text.
+async fn resolve_key(inv: &Invocation<'_>, iri: &Iri, arg: &str, who: &str) -> Result<String> {
+    let repr = inv
+        .issue(Request::new(Verb::Source, iri.clone()))
+        .await
+        .map_err(|e| sub_failure(who, arg, iri, e))?;
+    String::from_utf8(repr.bytes).map_err(|_| Error::InvalidArgument {
+        name: arg.to_string(),
+        detail: format!("{who}: the `{arg}` resource {iri} is not UTF-8 text"),
+    })
+}
+
+/// A sub-request for an ARGUMENT failed: report it against that argument, naming the
+/// resource, never as the outer call's own failure. Passed up unchanged, a key
+/// resource that lacked its own `in` answered "missing `in`" to a caller who had passed
+/// `in`, and an unbound key IRI answered `Unresolved`, which says the endpoint the
+/// caller named does not exist. Three kinds keep their kind, because they mean the same
+/// thing one level down as at the top: `Denied` (the caller lacks the grant to read the
+/// key) and the transient `Timeout`/`Unavailable` (a retry may succeed). Every other
+/// failure, `NotFound` included, is the argument naming nothing usable.
+fn sub_failure(who: &str, arg: &str, iri: &Iri, error: Error) -> Error {
+    let context = format!("{who}: reading the `{arg}` resource {iri}");
+    match error {
+        Error::Denied(m) => Error::Denied(format!("{context}: {m}")),
+        Error::Timeout(m) => Error::Timeout(format!("{context}: {m}")),
+        Error::Unavailable(m) => Error::Unavailable(format!("{context}: {m}")),
+        other => Error::InvalidArgument {
+            name: arg.to_string(),
+            detail: format!("{context} failed: {other}"),
+        },
+    }
+}
+
+/// Parse an identity file in age's format, as `age-keygen -o key.txt` writes it and
+/// `age -d -i` reads it: one `AGE-SECRET-KEY-1…` per line, blank lines and `#` comments
+/// skipped, any number of identities (any one that matches opens the file). Lines are
+/// trimmed, a superset of age's own parser. Plugin identities are not supported (this
+/// module runs no plugins). A bad line is named by NUMBER, never echoed.
+fn parse_identities(key_text: &str) -> Result<Vec<Identity>> {
+    let invalid = |detail: String| Error::InvalidArgument {
+        name: "key".to_string(),
+        detail,
+    };
+    let mut identities = Vec::new();
+    for (number, line) in key_text.lines().enumerate().map(|(n, l)| (n + 1, l.trim())) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        identities.push(Identity::from_str(line).map_err(|e| {
+            invalid(format!(
+                "urn:encrypt:decrypt: bad age identity on line {number}: {e}"
+            ))
+        })?);
+    }
+    if identities.is_empty() {
+        return Err(invalid(
+            "urn:encrypt:decrypt: the `key` resource holds no age identity (expected \
+             AGE-SECRET-KEY-1…)"
+                .to_string(),
+        ));
+    }
+    Ok(identities)
 }
 
 /// The fixed scalar the low-order check multiplies by. Any scalar works once
@@ -138,8 +258,10 @@ fn parse_recipients(key_text: &str) -> Result<Vec<Recipient>> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let recipient = Recipient::from_str(line)
-            .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: bad age recipient: {e}")))?;
+        let recipient = Recipient::from_str(line).map_err(|e| Error::InvalidArgument {
+            name: "to".to_string(),
+            detail: format!("urn:encrypt:encrypt: bad age recipient on line {number}: {e}"),
+        })?;
         match recipient_point(line) {
             Some(point) if !is_low_order(point) => recipients.push(recipient),
             Some(_) => {
@@ -212,12 +334,20 @@ fn seal(plaintext: &[u8], recipients: &[Recipient]) -> Result<String> {
         .map_err(|_| Error::Endpoint("urn:encrypt:encrypt: armor not UTF-8".to_string()))
 }
 
-/// Open age `ciphertext` with `identity`.
-fn open(ciphertext: &[u8], identity: &Identity) -> Result<Vec<u8>> {
-    let decryptor = age::Decryptor::new(age::armor::ArmoredReader::new(ciphertext))
-        .map_err(|e| Error::Endpoint(format!("urn:encrypt:decrypt: {e}")))?;
+/// Open age `ciphertext`, armored or binary (`ArmoredReader` passes binary through),
+/// with whichever of `identities` matches.
+fn open(ciphertext: &[u8], identities: &[Identity]) -> Result<Vec<u8>> {
+    let decryptor =
+        age::Decryptor::new(age::armor::ArmoredReader::new(ciphertext)).map_err(|e| {
+            Error::InvalidArgument {
+                name: "in".to_string(),
+                detail: format!(
+                    "urn:encrypt:decrypt: `in` is not age ciphertext (armored or binary): {e}"
+                ),
+            }
+        })?;
     let mut reader = decryptor
-        .decrypt(std::iter::once(identity as &dyn age::Identity))
+        .decrypt(identities.iter().map(|i| i as &dyn age::Identity))
         .map_err(|e| Error::Denied(format!("urn:encrypt:decrypt: {e}")))?;
     let mut plaintext = Vec::new();
     reader
@@ -232,16 +362,24 @@ pub struct Encrypt;
 #[async_trait]
 impl Endpoint for Encrypt {
     async fn invoke(&self, inv: &Invocation<'_>) -> Result<Representation> {
-        let plaintext = read_input(inv)?.as_bytes().to_vec();
-        let key_text = resolve_key(inv, "to", "urn:encrypt:encrypt").await?;
+        const WHO: &str = "urn:encrypt:encrypt";
+        source_only(WHO, inv.request.verb)?;
+        // Every argument's SHAPE first, then the reads: a call refused for a missing or
+        // malformed argument has resolved nothing.
+        input_arg(inv)?;
+        let to = key_iri(inv, "to", WHO)?;
+        let plaintext = input_bytes(inv, WHO).await?;
+        let key_text = resolve_key(inv, &to, "to", WHO).await?;
 
         // One or more `age1…` recipients (one per non-empty line) → multi-recipient
         // encrypt, every one of them checked for low order before age sees it.
         let recipients = parse_recipients(&key_text)?;
         if recipients.is_empty() {
-            return Err(Error::Endpoint(
-                "urn:encrypt:encrypt: `to` has no age recipients (expected age1…)".to_string(),
-            ));
+            return Err(Error::InvalidArgument {
+                name: "to".to_string(),
+                detail: "urn:encrypt:encrypt: the `to` resource holds no age recipient                          (expected age1…)"
+                    .to_string(),
+            });
         }
 
         let text = contained("urn:encrypt:encrypt", || seal(&plaintext, &recipients))?;
@@ -273,7 +411,7 @@ impl Endpoint for Encrypt {
             .verb(Verb::Meta)
             .input(
                 ArgSpec::new("in")
-                    .summary("the bytes to encrypt (positional or piped as `content`)")
+                    .summary("the bytes to encrypt, any bytes (positional or piped as `content`)")
                     .class(XSD_STRING),
             )
             // ONE resource IRI, whose bytes list one or more `age1…` recipients (one per
@@ -298,19 +436,20 @@ pub struct Decrypt;
 #[async_trait]
 impl Endpoint for Decrypt {
     async fn invoke(&self, inv: &Invocation<'_>) -> Result<Representation> {
+        const WHO: &str = "urn:encrypt:decrypt";
+        source_only(WHO, inv.request.verb)?;
         if !inv.capability.allows(CAP_DECRYPT) {
             return Err(Error::Denied(format!(
                 "urn:encrypt:decrypt requires the {CAP_DECRYPT} capability"
             )));
         }
-        let ciphertext = read_input(inv)?.to_string();
-        let key_text = resolve_key(inv, "key", "urn:encrypt:decrypt").await?;
-        let identity = Identity::from_str(key_text.trim())
-            .map_err(|e| Error::Endpoint(format!("urn:encrypt:decrypt: bad age identity: {e}")))?;
+        input_arg(inv)?;
+        let key = key_iri(inv, "key", WHO)?;
+        let ciphertext = input_bytes(inv, WHO).await?;
+        let key_text = resolve_key(inv, &key, "key", WHO).await?;
+        let identities = parse_identities(&key_text)?;
 
-        let plaintext = contained("urn:encrypt:decrypt", || {
-            open(ciphertext.as_bytes(), &identity)
-        })?;
+        let plaintext = contained(WHO, || open(&ciphertext, &identities))?;
 
         // A pure function of the ciphertext and the identity: the same two inputs
         // open to the same bytes every time. Marked cacheable and declaring no
@@ -334,9 +473,10 @@ impl Endpoint for Decrypt {
         Description::new("decrypt")
             .title("Decrypt (age / X25519)")
             .summary(
-                "Open ASCII-armored age ciphertext with a kernel-resolved identity. Pass the \
-                 ciphertext as `in` (or piped `content`) and the identity resource as `key=` (an \
-                 `AGE-SECRET-KEY-1…`). Requires the urn:cap:decrypt capability (it wields the \
+                "Open age ciphertext (ASCII-armored or binary) with a kernel-resolved identity. \
+                 Pass the ciphertext as `in` (or piped `content`) and the identity resource as \
+                 `key=` (an age identity file: one or more `AGE-SECRET-KEY-1…` lines, `#` \
+                 comments allowed). Requires the urn:cap:decrypt capability (it wields the \
                  private key); a wrong key or tampered ciphertext is a typed Denied/error.",
             )
             .verb(Verb::Source)
@@ -344,12 +484,17 @@ impl Endpoint for Decrypt {
             .requires(CAP_DECRYPT)
             .input(
                 ArgSpec::new("in")
-                    .summary("the armored age ciphertext (positional or piped as `content`)")
+                    .summary(
+                        "the age ciphertext, armored or binary (positional or piped as `content`)",
+                    )
                     .class(XSD_STRING),
             )
             .input(
                 ArgSpec::new("key")
-                    .summary("the owner's identity resource (AGE-SECRET-KEY-1…)")
+                    .summary(
+                        "the owner's identity resource: an age identity file \
+                         (AGE-SECRET-KEY-1… lines)",
+                    )
                     .class(RDFS_RESOURCE),
             )
             .output("application/octet-stream")

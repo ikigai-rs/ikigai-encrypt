@@ -14,6 +14,9 @@ source urn:file:msg.txt | urn:encrypt:encrypt to=urn:secret:brian.pub   # -> arm
 source urn:file:msg.age | urn:encrypt:decrypt key=urn:secret:brian      # -> plaintext
 ```
 
+Plaintext is any bytes, not only text, and `decrypt` opens both the armored form this
+module emits and the binary `.age` the `age` CLI writes by default.
+
 ## Why it's the dual of signing
 
 `ikigai-sign` turns bytes + a key into a signature you can verify; `ikigai-encrypt`
@@ -42,7 +45,18 @@ ciphertext.
 
 Keys are `age` recipients (`age1…`) and identities (`AGE-SECRET-KEY-1…`), resolved
 **through the kernel** (`to=`/`key=` are resource URIs — a `urn:file:` or a
-`urn:secret:*` — never the key by value; an error never echoes what it was given). **This crate never mints keys** — generating and storing them is the
+`urn:secret:*` — never the key by value; an error never echoes what it was given).
+A host calling the kernel directly may also pass either one as `ArgRef::Reference`,
+which resolves exactly like the by-name IRI.
+
+Both resources use age's file formats. A **recipients** resource lists one `age1…` per
+line; an **identity** resource is an age identity file, exactly as
+`age-keygen -o key.txt` writes it: `#` comment lines, blank lines, and one or more
+`AGE-SECRET-KEY-1…` lines, any one of which may open the file. A recipient whose
+X25519 point has low order is refused (anyone could open a file sealed to it). A bad
+line is reported by its line NUMBER, never echoed.
+
+**This crate never mints keys** — generating and storing them is the
 secret module's job, exactly as `ikigai-sign` leaves keygen to the secret module.
 
 ## Caching
@@ -89,6 +103,31 @@ or any error text a caller can provoke (including passing the identity itself as
   other panic inside the sealing or opening is contained in the endpoint and answered
   as an error, so a future upstream panic cannot take a host down
   (`tests/low_order.rs`).
+- **The input is read as bytes, and `in` always wins** (bugs 2 and 3). A present `in`
+  that was not UTF-8 used to fall through to `content`, so the module sealed or
+  opened the WRONG bytes, silently; and binary plaintext or a binary `.age` file was
+  refused as `MissingArgument("in")`. Now `in` (or, only when `in` is absent, the
+  piped `content`) is read as bytes: any plaintext seals, and armored and binary
+  ciphertext both open. Ciphertext that is not age at all is an `InvalidArgument` on
+  `in`.
+- **Identity files in age's format** (bug 4): comment lines and several identities,
+  as `age-keygen` writes them, where only a bare key used to parse.
+- **Errors name the argument that was wrong** (bugs 5 and 6). A present `key`/`to`
+  that is not an IRI is an `InvalidArgument`, never `MissingArgument`; a key passed
+  by reference resolves; a content-addressed argument is refused by name. A key
+  resource's OWN failure is reported against `key`/`to` and names that resource,
+  instead of passing up as if it were the outer call's (a key resource lacking its
+  own `in` used to answer "missing `in`" to a caller who had passed one). `Denied`,
+  `Timeout` and `Unavailable` keep their kind. An unparsable recipient or identity
+  is now `InvalidArgument` (it was `Endpoint`), named by line.
+- **Only Source is answered.** Both endpoints declare Source (and Meta, which the
+  kernel answers); an `Exists`, `Sink` or `Delete` used to seal or open as if it were
+  a Source, and is now refused (`tests/inputs.rs`).
+- Version call: **patch (0.1.2)**. The Rust API is unchanged, and every change makes
+  the endpoints do what their description and this README already said. The
+  observable differences (error variants, refused verbs) correct contracts nobody
+  could rely on, and a patch lets the crash fix reach every `ikigai-encrypt = "0.1.x"`
+  consumer without a manifest change.
 
 ## Using it from a host
 
