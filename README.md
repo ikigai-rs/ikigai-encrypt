@@ -76,6 +76,20 @@ identity is consulted, and no face — description, catalog, action manifold, `M
 or any error text a caller can provoke (including passing the identity itself as
 `key=`) — carries the private key.
 
+## Changes
+
+### Unreleased
+
+- **A low-order recipient is refused, never a panic** (ledger #853, bug 1). A
+  syntactically valid `age1…` whose point has small order (u = 0, u = 1, the order-8
+  points, and their non-canonical spellings) made `age` 0.11 panic inside
+  `urn:encrypt:encrypt`, which needs no capability. Every recipient is now checked
+  before age sees it, by the same X25519 function age runs, and a low-order one is a
+  typed `InvalidArgument` on `to` that names the line and refuses the whole list. Any
+  other panic inside the sealing or opening is contained in the endpoint and answered
+  as an error, so a future upstream panic cannot take a host down
+  (`tests/low_order.rs`).
+
 ## Using it from a host
 
 ```rust,ignore

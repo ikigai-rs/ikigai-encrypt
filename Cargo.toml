@@ -22,6 +22,15 @@ async-trait = "0.1"
 # feature: this module never mints keys (the secret module does).
 age = { version = "0.11", default-features = false, features = ["armor"] }
 
+# The low-order recipient check (ledger #853, bug 1). Both are already in the graph
+# through `age`, at the versions `age` 0.11 asks for, so nothing new is compiled. The
+# check decodes the recipient exactly as age does (bech32 0.9, the Bech32 variant, HRP
+# `age`) and runs the same X25519 function age runs, so the two cannot disagree about
+# which points are low order. `x25519-dalek` 2.0.1 is the verified floor for
+# `SharedSecret::was_contributory`; `static_secrets` gives the fixed probe scalar.
+bech32 = "0.9"
+x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
+
 [dev-dependencies]
 futures = "0.3" # block_on for the async endpoint tests
 # The module recipe as one test (`tests/conformance.rs`): walks every bound endpoint and

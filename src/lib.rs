@@ -91,6 +91,141 @@ async fn resolve_key(inv: &Invocation<'_>, arg: &str, who: &str) -> Result<Strin
         .map_err(|_| Error::Endpoint(format!("{who}: key resource is not UTF-8 text")))
 }
 
+/// The fixed scalar the low-order check multiplies by. Any scalar works once
+/// X25519 clamps it (a multiple of 8, so it annihilates every point of order 1, 2, 4
+/// or 8, on the curve or its twist) provided it is not a multiple of the prime
+/// subgroup order, which would annihilate honest keys too; a unit test pins that it
+/// is not (`the_probe_scalar_is_not_degenerate`).
+const LOW_ORDER_PROBE: [u8; 32] = [0x42; 32];
+
+/// The 32-byte u-coordinate of an `age1…` recipient, decoded exactly as `age` 0.11
+/// decodes it (bech32 0.9, the Bech32 variant, HRP `age`). `age::x25519::Recipient`
+/// does not expose its bytes, so the string is decoded a second time here; `None`
+/// is a spelling age accepted and this decoder did not, and is refused rather than
+/// sealed to unchecked.
+fn recipient_point(recipient: &str) -> Option<[u8; 32]> {
+    use bech32::FromBase32;
+    let (hrp, data, variant) = bech32::decode(recipient).ok()?;
+    if hrp != "age" || variant != bech32::Variant::Bech32 {
+        return None;
+    }
+    Vec::<u8>::from_base32(&data).ok()?.try_into().ok()
+}
+
+/// Whether X25519 with a clamped scalar sends this point to the all-zero output.
+///
+/// That is the condition `age` 0.11 PANICS on when it seals (`x25519.rs`, "Generated
+/// the all-zero esk"), and a sealing that did not panic would be worse: the wrapped
+/// file key would be derivable by anyone. The check is the scalar multiplication
+/// itself rather than a list of known small-order u-coordinates because it is the
+/// SAME function age runs (x25519-dalek, the same masking of bit 255 and reduction
+/// mod p): a list has to enumerate the non-canonical spellings (u ≥ p, bit 255 set)
+/// and is right only as far as it is complete; this cannot disagree with age.
+fn is_low_order(point: [u8; 32]) -> bool {
+    let probe = x25519_dalek::StaticSecret::from(LOW_ORDER_PROBE);
+    !probe
+        .diffie_hellman(&x25519_dalek::PublicKey::from(point))
+        .was_contributory()
+}
+
+/// Parse the recipient list: one `age1…` per line, blank lines and `#` comments
+/// skipped. A low-order point is a typed `InvalidArgument` on `to` naming the LINE
+/// (never the key: the module does not echo what it read), and it refuses the whole
+/// list; sealing to the rest would silently drop a device the caller named.
+fn parse_recipients(key_text: &str) -> Result<Vec<Recipient>> {
+    let mut recipients = Vec::new();
+    for (number, line) in key_text.lines().enumerate().map(|(n, l)| (n + 1, l.trim())) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let recipient = Recipient::from_str(line)
+            .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: bad age recipient: {e}")))?;
+        match recipient_point(line) {
+            Some(point) if !is_low_order(point) => recipients.push(recipient),
+            Some(_) => {
+                return Err(Error::InvalidArgument {
+                    name: "to".to_string(),
+                    detail: format!(
+                        "urn:encrypt:encrypt: the recipient on line {number} is a low-order \
+                         X25519 point; anyone could open a file sealed to it, so it is refused"
+                    ),
+                })
+            }
+            None => {
+                return Err(Error::InvalidArgument {
+                    name: "to".to_string(),
+                    detail: format!(
+                        "urn:encrypt:encrypt: the recipient on line {number} could not be \
+                         decoded for the low-order check"
+                    ),
+                })
+            }
+        }
+    }
+    Ok(recipients)
+}
+
+/// Run `f`, turning a panic inside it into a typed error.
+///
+/// The low-order check stops the one panic the audit found, but `age` is a library
+/// that still answers some states with `panic!`, and this module is reachable by a
+/// caller holding nothing. A host that does not catch unwinds (the MCP projection
+/// is one) would go down with it, so a panic in the sealing or opening is contained
+/// HERE and answered as an error. The panic's message is not echoed: it comes from
+/// code that held the plaintext or the identity, and error text travels through
+/// logs, traces and MCP replies (the panic hook still prints it to stderr).
+///
+/// `AssertUnwindSafe` is sound here because `f` owns everything it touches: its
+/// buffers are dropped by the unwind and nothing it could have left half-written is
+/// observed afterwards.
+fn contained<T>(who: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        Err(Error::Endpoint(format!(
+            "{who}: the age library panicked; the panic was contained and nothing was produced"
+        )))
+    })
+}
+
+/// Seal `plaintext` to `recipients` as ASCII-armored age.
+fn seal(plaintext: &[u8], recipients: &[Recipient]) -> Result<String> {
+    let encryptor =
+        age::Encryptor::with_recipients(recipients.iter().map(|r| r as &dyn age::Recipient))
+            .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: {e}")))?;
+
+    let mut armored_out = Vec::new();
+    let armor = ArmoredWriter::wrap_output(&mut armored_out, Format::AsciiArmor)
+        .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: armor: {e}")))?;
+    let mut writer = encryptor
+        .wrap_output(armor)
+        .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: {e}")))?;
+    writer
+        .write_all(plaintext)
+        .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: write: {e}")))?;
+    let armor = writer
+        .finish()
+        .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: finish: {e}")))?;
+    armor
+        .finish()
+        .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: armor finish: {e}")))?;
+
+    String::from_utf8(armored_out)
+        .map_err(|_| Error::Endpoint("urn:encrypt:encrypt: armor not UTF-8".to_string()))
+}
+
+/// Open age `ciphertext` with `identity`.
+fn open(ciphertext: &[u8], identity: &Identity) -> Result<Vec<u8>> {
+    let decryptor = age::Decryptor::new(age::armor::ArmoredReader::new(ciphertext))
+        .map_err(|e| Error::Endpoint(format!("urn:encrypt:decrypt: {e}")))?;
+    let mut reader = decryptor
+        .decrypt(std::iter::once(identity as &dyn age::Identity))
+        .map_err(|e| Error::Denied(format!("urn:encrypt:decrypt: {e}")))?;
+    let mut plaintext = Vec::new();
+    reader
+        .read_to_end(&mut plaintext)
+        .map_err(|e| Error::Endpoint(format!("urn:encrypt:decrypt: read: {e}")))?;
+    Ok(plaintext)
+}
+
 /// `urn:encrypt:encrypt` — seal `in` to the recipient public key(s) in `to`. Open.
 pub struct Encrypt;
 
@@ -100,42 +235,16 @@ impl Endpoint for Encrypt {
         let plaintext = read_input(inv)?.as_bytes().to_vec();
         let key_text = resolve_key(inv, "to", "urn:encrypt:encrypt").await?;
 
-        // One or more `age1…` recipients (one per non-empty line) → multi-recipient encrypt.
-        let recipients: Vec<Recipient> = key_text
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .map(Recipient::from_str)
-            .collect::<std::result::Result<_, _>>()
-            .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: bad age recipient: {e}")))?;
+        // One or more `age1…` recipients (one per non-empty line) → multi-recipient
+        // encrypt, every one of them checked for low order before age sees it.
+        let recipients = parse_recipients(&key_text)?;
         if recipients.is_empty() {
             return Err(Error::Endpoint(
                 "urn:encrypt:encrypt: `to` has no age recipients (expected age1…)".to_string(),
             ));
         }
 
-        let encryptor =
-            age::Encryptor::with_recipients(recipients.iter().map(|r| r as &dyn age::Recipient))
-                .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: {e}")))?;
-
-        let mut armored_out = Vec::new();
-        let armor = ArmoredWriter::wrap_output(&mut armored_out, Format::AsciiArmor)
-            .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: armor: {e}")))?;
-        let mut writer = encryptor
-            .wrap_output(armor)
-            .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: {e}")))?;
-        writer
-            .write_all(&plaintext)
-            .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: write: {e}")))?;
-        let armor = writer
-            .finish()
-            .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: finish: {e}")))?;
-        armor
-            .finish()
-            .map_err(|e| Error::Endpoint(format!("urn:encrypt:encrypt: armor finish: {e}")))?;
-
-        let text = String::from_utf8(armored_out)
-            .map_err(|_| Error::Endpoint("urn:encrypt:encrypt: armor not UTF-8".to_string()))?;
+        let text = contained("urn:encrypt:encrypt", || seal(&plaintext, &recipients))?;
         // NOT cacheable, by construction: age mints a fresh ephemeral X25519 key and
         // file key per call, so two encryptions of the same plaintext to the same
         // recipients are different bytes. A cached ciphertext would be a function of
@@ -199,15 +308,9 @@ impl Endpoint for Decrypt {
         let identity = Identity::from_str(key_text.trim())
             .map_err(|e| Error::Endpoint(format!("urn:encrypt:decrypt: bad age identity: {e}")))?;
 
-        let decryptor = age::Decryptor::new(age::armor::ArmoredReader::new(ciphertext.as_bytes()))
-            .map_err(|e| Error::Endpoint(format!("urn:encrypt:decrypt: {e}")))?;
-        let mut reader = decryptor
-            .decrypt(std::iter::once(&identity as &dyn age::Identity))
-            .map_err(|e| Error::Denied(format!("urn:encrypt:decrypt: {e}")))?;
-        let mut plaintext = Vec::new();
-        reader
-            .read_to_end(&mut plaintext)
-            .map_err(|e| Error::Endpoint(format!("urn:encrypt:decrypt: read: {e}")))?;
+        let plaintext = contained("urn:encrypt:decrypt", || {
+            open(ciphertext.as_bytes(), &identity)
+        })?;
 
         // A pure function of the ciphertext and the identity: the same two inputs
         // open to the same bytes every time. Marked cacheable and declaring no
@@ -369,6 +472,36 @@ mod tests {
             *b ^= 0x01;
         }
         assert!(decrypt(&k, &ct, "urn:key:id", &decrypt_cap()).is_err());
+    }
+
+    /// The probe scalar is not a multiple of the prime-subgroup order: multiplied by
+    /// the base point (order ℓ) it gives a non-zero point, so it cannot annihilate a
+    /// full-order key, only a small-order one.
+    #[test]
+    fn the_probe_scalar_is_not_degenerate() {
+        let mut base = [0u8; 32];
+        base[0] = 9;
+        assert!(!is_low_order(base), "the base point is full order");
+        assert!(is_low_order([0u8; 32]), "u = 0 is low order");
+    }
+
+    /// The README promises a typed error, never a panic. Whatever `age` does in a
+    /// future release, a panic inside the sealing or opening is answered as an error
+    /// and the caller's thread unwinds no further than this module.
+    #[test]
+    fn a_panic_inside_age_is_contained_as_a_typed_error() {
+        // (The default hook prints this panic to stderr; that is the point of it.)
+        let err =
+            contained::<()>("urn:encrypt:encrypt", || panic!("AGE-SECRET-KEY-1LEAK")).unwrap_err();
+        assert!(matches!(err, Error::Endpoint(_)), "{err:?}");
+        let text = err.to_string();
+        assert!(text.contains("panicked"), "{text}");
+        assert!(
+            !text.contains("LEAK"),
+            "the panic message is not echoed: {text}"
+        );
+        // And an ordinary result passes through untouched.
+        assert_eq!(contained("x", || Ok(7)).unwrap(), 7);
     }
 
     #[test]
