@@ -92,7 +92,7 @@ or any error text a caller can provoke (including passing the identity itself as
 
 ## Changes
 
-### Unreleased
+### 0.1.2 (2026-10-07)
 
 - **A low-order recipient is refused, never a panic** (ledger #853, bug 1). A
   syntactically valid `age1…` whose point has small order (u = 0, u = 1, the order-8

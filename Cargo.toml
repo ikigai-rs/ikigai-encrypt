@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-encrypt"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Public-key encryption module for ikigai — the dual of ikigai-sign. `urn:encrypt:encrypt` (open) seals bytes to one or more recipient public keys (age / X25519); `urn:encrypt:decrypt` (requires `urn:cap:decrypt`) opens them with a kernel-resolved identity. Keys are age recipients/identities resolved through the kernel — no keygen here (that is the secret module's job). Multi-recipient so an inbox can be encrypted to all of an owner's devices at once."
