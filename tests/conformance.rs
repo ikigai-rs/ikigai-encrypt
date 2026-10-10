@@ -77,11 +77,16 @@ const DECRYPT: &str = "decrypt";
 const ENCRYPT_IRI: &str = "urn:encrypt:encrypt";
 const DECRYPT_IRI: &str = "urn:encrypt:decrypt";
 
-/// Where the fixture binds the keypair. Each doubles as the golden thread the
-/// threaded keystore names for it — the `ikigai-fs` convention (`depends_on` the
-/// resource's own IRI), so a cut is keyed on the name the caller resolved.
+/// Where the fixture binds the keypair.
 const RECIPIENT_IRI: &str = "urn:conformance:key:recipient";
 const IDENTITY_IRI: &str = "urn:conformance:key:identity";
+
+/// The golden thread the threaded keystore names for each key's STATE, and cuts on
+/// rotation. Deliberately not the key's IRI: since core 0.1.73 the kernel hangs
+/// every cacheable read on its own name already, so a declared thread equal to that
+/// name says nothing about what cuts it (conformance's CACHEABLE rule).
+const RECIPIENT_THREAD: &str = "urn:conformance:keystore:recipient";
+const IDENTITY_THREAD: &str = "urn:conformance:keystore:identity";
 
 /// The bytes every fired action seals or opens.
 const MESSAGE: &str = "conformance";
@@ -170,7 +175,7 @@ impl MetaRenderer for EveryField {
 /// The module's space with one keypair bound as kernel resources, handles to both
 /// key texts so a test can rotate or corrupt them, and the read counters.
 /// `threaded` selects the keystore's kind (see the file docs): every key under a
-/// golden thread named after its IRI, or every key live.
+/// golden thread of the keystore's own, or every key live.
 struct Keystore {
     kernel: Kernel,
     keys: Keypair,
@@ -186,14 +191,14 @@ fn keystore(threaded: bool) -> Keystore {
     let identity = Arc::new(RwLock::new(keys.identity.clone()));
     let recipient_reads = Arc::new(AtomicUsize::new(0));
     let identity_reads = Arc::new(AtomicUsize::new(0));
-    let thread = |iri: &'static str| threaded.then_some(iri);
+    let thread = |name: &'static str| threaded.then_some(name);
     let space = ikigai_encrypt::space()
         .bind(
             Exact::new(RECIPIENT_IRI),
             Key {
                 id: "key-recipient",
                 text: Arc::clone(&recipient),
-                thread: thread(RECIPIENT_IRI),
+                thread: thread(RECIPIENT_THREAD),
                 reads: Arc::clone(&recipient_reads),
             },
         )
@@ -202,7 +207,7 @@ fn keystore(threaded: bool) -> Keystore {
             Key {
                 id: "key-identity",
                 text: Arc::clone(&identity),
-                thread: thread(IDENTITY_IRI),
+                thread: thread(IDENTITY_THREAD),
                 reads: Arc::clone(&identity_reads),
             },
         );
@@ -278,9 +283,12 @@ fn decrypt(kernel: &Kernel, ciphertext: &str) -> CoreResult<Representation> {
 }
 
 /// The suite, configured for this module (see the file docs for why each line):
-/// one fixture per action.
+/// one fixture per action, and `space()` declared self-named. The kernel under
+/// test is `space()` extended with the fixture keys, which is anonymous (a bind
+/// drops the name); the SPACE-NAME check is about the constructor, not that kernel.
 fn suite(ciphertext: &str) -> Suite {
     Suite::new()
+        .self_named_space("encrypt", ikigai_encrypt::space)
         .fixture(
             Fixture::new(ENCRYPT, Verb::Source)
                 .arg("in", MESSAGE)
@@ -331,6 +339,10 @@ fn conforms() {
     assert!(report.is_clean(), "{report}");
     assert_shape(&report);
     assert_eq!(report.declared.cacheable, [DECRYPT], "{report}");
+    assert_eq!(
+        ikigai_core::space_iri("encrypt").as_str(),
+        ikigai_encrypt::SPACE_ID
+    );
 
     let report = suite(&ciphertext)
         .cacheable(DECRYPT)
@@ -438,7 +450,7 @@ fn over_a_live_keystore_nothing_is_cached() {
 /// KEYSTORE cuts. This module has no watcher and no key material, so after a
 /// rotation with no cut the cached plaintext — opened with the OLD key — is still
 /// served, and the identity resource is not even read; the keystore cutting the
-/// thread it declared (the key's own IRI) is what recomputes it. The
+/// thread it declared (`IDENTITY_THREAD`) is what recomputes it. The
 /// recomputation is visible because the rotated key cannot open the ciphertext at
 /// all: the fresh resolution is a typed `Denied`, not the stale plaintext.
 #[test]
@@ -457,7 +469,7 @@ fn a_rotated_key_is_cut_and_the_plaintext_recomputes() {
         first
             .threads()
             .iter()
-            .any(|t| t.to_string() == IDENTITY_IRI),
+            .any(|t| t.to_string() == IDENTITY_THREAD),
         "under the key's thread: {:?}",
         first.threads()
     );
@@ -482,10 +494,10 @@ fn a_rotated_key_is_cut_and_the_plaintext_recomputes() {
         "served from the cache: the rotated identity was not read"
     );
 
-    // The keystore cuts the thread it named — the key's IRI — and the plaintext
+    // The keystore cuts the thread it named — `IDENTITY_THREAD` — and the plaintext
     // that depended on it goes with it: the next call reads the rotated key, which
     // cannot open a ciphertext sealed to the old one.
-    store.kernel.cut(IDENTITY_IRI);
+    store.kernel.cut(IDENTITY_THREAD);
     let err = decrypt(&store.kernel, &ciphertext).unwrap_err();
     assert!(
         matches!(err, Error::Denied(_)),
@@ -705,7 +717,7 @@ fn the_manifold_carries_no_private_key() {
     // neither the wrong key nor the garbage appears in the error.
     let other = keypair().identity;
     *store.identity.write().unwrap() = other.clone();
-    store.kernel.cut(IDENTITY_IRI);
+    store.kernel.cut(IDENTITY_THREAD);
     let text = denied_text(&[("in", &ciphertext), ("key", IDENTITY_IRI)]);
     assert!(
         !text.contains(&secret) && !text.contains(secret_tail(&other)),
@@ -714,7 +726,7 @@ fn the_manifold_carries_no_private_key() {
 
     let garbage = "not-an-age-identity-7f3a9c";
     *store.identity.write().unwrap() = garbage.to_string();
-    store.kernel.cut(IDENTITY_IRI);
+    store.kernel.cut(IDENTITY_THREAD);
     let text = denied_text(&[("in", &ciphertext), ("key", IDENTITY_IRI)]);
     assert!(text.contains("bad age identity"), "{text}");
     assert!(
@@ -725,7 +737,7 @@ fn the_manifold_carries_no_private_key() {
     // A `to=` pointing at the private key by mistake: age refuses the prefix, and
     // the module does not echo what it read.
     *store.recipient.write().unwrap() = store.keys.identity.clone();
-    store.kernel.cut(RECIPIENT_IRI);
+    store.kernel.cut(RECIPIENT_THREAD);
     let err = issue(&store.kernel, encrypt_request(MESSAGE), &nobody()).unwrap_err();
     let text = err.to_string();
     assert!(text.contains("bad age recipient"), "{text}");

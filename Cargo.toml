@@ -12,7 +12,7 @@ categories = ["cryptography"]
 
 [dependencies]
 # The published kernel, consumed from crates.io — the SAME version the hosts use.
-ikigai-core = "0.1.46"
+ikigai-core = "0.1.89" # the floor for `space_iri` and a `bind` that drops the name
 async-trait = "0.1"
 
 # The `age` file-encryption format (X25519 recipients, ChaCha20-Poly1305, ASCII armor).
@@ -34,6 +34,5 @@ x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 [dev-dependencies]
 futures = "0.3" # block_on for the async endpoint tests
 # The module recipe as one test (`tests/conformance.rs`): walks every bound endpoint and
-# reports every violation at once. Its own floor on ikigai-core (0.1.67) is above the
-# library's; the library's pin stays the true minimum of the API the LIBRARY uses.
-ikigai-conformance = "0.2.0"
+# reports every violation at once, SPACE-NAME included (0.6.0).
+ikigai-conformance = "0.6.0"
