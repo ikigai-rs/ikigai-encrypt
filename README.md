@@ -136,6 +136,9 @@ let space = ikigai_encrypt::space(); // binds urn:encrypt:encrypt + urn:encrypt:
 // mount into your kernel alongside the other modules
 ```
 
+The space names itself `urn:iki:space:encrypt` (`ikigai_encrypt::SPACE_ID`); a host
+that binds more doors onto it gets an anonymous space and names its own composition.
+
 Native-focused: the `age` stack runs on the edge and the owner's devices (encrypt on the
 edge, decrypt on your laptops), not in the browser — so there is no wasm face.
 

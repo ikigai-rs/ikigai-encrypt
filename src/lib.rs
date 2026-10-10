@@ -31,8 +31,8 @@ use age::armor::{ArmoredWriter, Format};
 use age::x25519::{Identity, Recipient};
 use async_trait::async_trait;
 use ikigai_core::{
-    ArgRef, ArgSpec, Description, Endpoint, EndpointSpace, Error, Exact, Invocation, Iri, ReprType,
-    Representation, Request, Result, Verb,
+    space_iri, ArgRef, ArgSpec, Description, Endpoint, EndpointSpace, Error, Exact, Invocation,
+    Iri, ReprType, Representation, Request, Result, Verb,
 };
 use std::io::{Read, Write};
 use std::str::FromStr;
@@ -45,11 +45,18 @@ const RDFS_RESOURCE: &str = "http://www.w3.org/2000/01/rdf-schema#Resource";
 /// The `class` of the plaintext/ciphertext byte arguments.
 const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 
-/// Mount the module: `urn:encrypt:encrypt` + `urn:encrypt:decrypt`.
+/// The name [`space`] claims: `urn:iki:space:encrypt`.
+pub const SPACE_ID: &str = "urn:iki:space:encrypt";
+
+/// Mount the module: `urn:encrypt:encrypt` + `urn:encrypt:decrypt`, named
+/// [`SPACE_ID`]. Configuration-free (two stateless endpoints, nothing read while
+/// building it), so every call holds the same doors and the name is a true claim.
+/// A host that binds more doors onto it gets an anonymous space (core 0.1.89).
 pub fn space() -> EndpointSpace {
     EndpointSpace::new()
         .bind(Exact::new("urn:encrypt:encrypt"), Encrypt)
         .bind(Exact::new("urn:encrypt:decrypt"), Decrypt)
+        .named(space_iri("encrypt"))
 }
 
 /// A `text/plain; charset=utf-8` representation of armored ciphertext.
