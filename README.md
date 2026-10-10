@@ -92,6 +92,18 @@ or any error text a caller can provoke (including passing the identity itself as
 
 ## Changes
 
+### 0.2.0 (2026-10-09)
+
+- **`space()` names itself `urn:iki:space:encrypt`** (`ikigai_encrypt::SPACE_ID`,
+  ledger #987). It is configuration-free, so the name is a true cache claim: every
+  call holds the same two doors. A host that binds more doors onto it gets an
+  anonymous space (core 0.1.89).
+- Floors: `ikigai-core` 0.1.89; tests run `ikigai-conformance` 0.6.0, which checks
+  the name (SPACE-NAME).
+- Version call: **minor (0.2.0)**. The Rust API only grows, but the name changes
+  `answered_by`, `urn:kernel:topology` and cache partitioning for every host, so
+  hosts adopt it deliberately.
+
 ### 0.1.2 (2026-10-07)
 
 - **A low-order recipient is refused, never a panic** (ledger #853, bug 1). A
