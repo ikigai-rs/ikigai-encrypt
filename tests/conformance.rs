@@ -41,9 +41,11 @@
 //!
 //! - **Declared outputs against what is served** (PENDING #11/#31,
 //!   [`declared_outputs_are_the_media_types_served`]).
-//! - **Required means required** (PENDING #49, [`required_inputs_are_required`]):
-//!   drop `in`, `to` or `key` — a typed `MissingArgument` naming it, before any
-//!   key is read; and the piped `content` fallback for `in` works.
+//! - **Required means required, beyond the typed refusal** (PENDING #49,
+//!   [`required_inputs_are_required`]): since 0.8.0 the suite's REQUIRED check
+//!   drops `in`, `to` and `key` one at a time and demands a typed refusal. Pinned
+//!   here beyond that: the refusal is `MissingArgument` naming the input, it comes
+//!   before any key is read, and the piped `content` fallback for `in` works.
 //! - **Denied before the key is read**
 //!   ([`ungranted_callers_are_refused_before_the_key_is_read`]): ENFORCED proves
 //!   the KERNEL's floor on the declared `urn:cap:decrypt` (PENDING #46); the same
