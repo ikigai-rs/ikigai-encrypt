@@ -34,5 +34,8 @@ x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 [dev-dependencies]
 futures = "0.3" # block_on for the async endpoint tests
 # The module recipe as one test (`tests/conformance.rs`): walks every bound endpoint and
-# reports every violation at once, SPACE-NAME included (0.6.0) and REQUIRED (0.8.0).
-ikigai-conformance = "0.8.0"
+# reports every violation at once, SPACE-NAME included (0.6.0) and REQUIRED (0.8.0). 0.9 adds
+# core 0.1.105's contract-shape checks (REQUIRED probes input groups, OUTPUTS honors
+# output_from, PIPELINE named-only line, VALIDATE refuses a default on a binding) and
+# RECOMPUTE; 0.10 adds FAILURES, off unless a suite opts in. The caret reads as a range: <0.11.0.
+ikigai-conformance = "0.10.0"
