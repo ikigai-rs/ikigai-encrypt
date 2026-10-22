@@ -8,3 +8,8 @@ concurrency:
 jobs:
   ci:
     uses: ikigai-rs/.github/.github/workflows/rust.yml@main
+    with:
+      # The library face builds without the kernel (ledger #2016): a consumer taking
+      # `default-features = false` must link neither ikigai-core nor async-trait.
+      no-default-features: true
+      no-default-features-forbid: "ikigai-core async-trait"

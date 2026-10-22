@@ -60,6 +60,8 @@
 //!   holding garbage — are searched for the identity's secret tail.
 //!
 //! No RDF face, so no namespace; no opt-outs; NAMES runs (both ids are kebab-case).
+// The endpoints are a default feature; a `--no-default-features` build has none to test.
+#![cfg(feature = "endpoints")]
 
 use age::secrecy::ExposeSecret;
 use age::x25519::Identity;

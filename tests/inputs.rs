@@ -19,6 +19,8 @@
 //! Plus the suspected one, confirmed here before the fix: both endpoints answered
 //! every verb as if it were Source, so an `Exists`, `Sink` or `Delete` on
 //! `urn:encrypt:encrypt` sealed.
+// The endpoints are a default feature; a `--no-default-features` build has none to test.
+#![cfg(feature = "endpoints")]
 
 use age::secrecy::ExposeSecret;
 use age::x25519::Identity;

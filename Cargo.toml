@@ -10,17 +10,28 @@ homepage = "https://github.com/ikigai-rs/ikigai-encrypt"
 keywords = ["ikigai", "roc", "encryption", "age", "x25519"]
 categories = ["cryptography"]
 
+[features]
+# The kernel endpoints (`space()`, `Encrypt`, `Decrypt`). A library consumer that only
+# seals and opens (ikigai-layers' state at rest, ledger #2016) turns the defaults off and
+# links neither `ikigai-core` nor `async-trait`; CI's `no default features` job checks that.
+default = ["endpoints"]
+endpoints = ["armor", "dep:ikigai-core", "dep:async-trait"]
+# ASCII armor: `age::seal_armored`, and armored input to `age::open`. The endpoints need it
+# (they answer armored text); a binary-only consumer does not.
+armor = ["age/armor"]
+
 [dependencies]
 # The published kernel, consumed from crates.io — the SAME version the hosts use.
-ikigai-core = "0.1.89" # the floor for `space_iri` and a `bind` that drops the name
-async-trait = "0.1"
+ikigai-core = { version = "0.1.89", optional = true } # the floor for `space_iri` and a `bind` that drops the name
+async-trait = { version = "0.1", optional = true }
 
 # The `age` file-encryption format (X25519 recipients, ChaCha20-Poly1305, ASCII armor).
 # Well-audited, self-describing ciphertext, and NATIVE multi-recipient — so the encrypted
-# inbox can name every one of the owner's device keys and any of them decrypts. `armor`
-# gives the ASCII-armored output that travels cleanly as an RDF/text literal. No keygen
-# feature: this module never mints keys (the secret module does).
-age = { version = "0.11", default-features = false, features = ["armor"] }
+# inbox can name every one of the owner's device keys and any of them decrypts. Its `armor`
+# feature (the ASCII-armored output that travels cleanly as an RDF/text literal) is this
+# crate's `armor` feature, above. No keygen feature: this module never mints keys (the
+# secret module does); `Identity::generate` is age's core API, not a feature.
+age = { version = "0.11", default-features = false }
 
 # The low-order recipient check (ledger #853, bug 1). Both are already in the graph
 # through `age`, at the versions `age` 0.11 asks for, so nothing new is compiled. The
@@ -33,6 +44,10 @@ x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 
 [dev-dependencies]
 futures = "0.3" # block_on for the async endpoint tests
+# `tests/library.rs` builds a file the way ikigai-layers' `at_rest.rs` does, with `age`
+# called directly, and opens it with this crate's `age::open`. The same line the library
+# takes; a dev-dependency adds no feature to a consumer's build.
+age = { version = "0.11", default-features = false }
 # The module recipe as one test (`tests/conformance.rs`): walks every bound endpoint and
 # reports every violation at once, SPACE-NAME included (0.6.0) and REQUIRED (0.8.0). 0.9 adds
 # core 0.1.105's contract-shape checks (REQUIRED probes input groups, OUTPUTS honors
