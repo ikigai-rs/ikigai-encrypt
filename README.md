@@ -92,7 +92,7 @@ or any error text a caller can provoke (including passing the identity itself as
 
 ## Changes
 
-### Unreleased
+### 0.2.1
 
 - **A library face, `ikigai_encrypt::age`** (ledger #2016): `seal` (binary age),
   `seal_armored` (behind `armor`), `open` (binary, and armored with `armor`),
