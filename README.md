@@ -92,6 +92,23 @@ or any error text a caller can provoke (including passing the identity itself as
 
 ## Changes
 
+### Unreleased
+
+- **A library face, `ikigai_encrypt::age`** (ledger #2016): `seal` (binary age),
+  `seal_armored` (behind `armor`), `open` (binary, and armored with `armor`),
+  `parse_identities` and `parse_recipients` (the low-order refusal included), a typed
+  `age::Error` that tells `NoMatchingKey` from the corrupt cases, and re-exports of
+  `Identity`, `Recipient` and `ExposeSecret`, so a caller needs no `age` dependency of its
+  own. The endpoints are now thin calls into it, with ONE function mapping its errors
+  onto kernel errors, so the two faces cannot drift.
+- **Features**: `endpoints` (default; the kernel endpoints, `ikigai-core`, implies
+  `armor`) and `armor`. `default-features = false` is the kernel-free library. A default
+  build is unchanged.
+- Endpoint error kinds are unchanged; some texts are now the library's
+  (`no identity matched any of the recipients` for a wrong key, `the payload did not
+  open: …` for a damaged payload), and the "holds no age recipient" text lost a run of
+  stray spaces.
+
 ### 0.2.0 (2026-10-09)
 
 - **`space()` names itself `urn:iki:space:encrypt`** (`ikigai_encrypt::SPACE_ID`,
@@ -140,6 +157,32 @@ or any error text a caller can provoke (including passing the identity itself as
   observable differences (error variants, refused verbs) correct contracts nobody
   could rely on, and a patch lets the crash fix reach every `ikigai-encrypt = "0.1.x"`
   consumer without a manifest change.
+
+## As a library
+
+The endpoints are one face; `ikigai_encrypt::age` is the other, with no kernel, for a host
+that seals its own files. Take it without the defaults and nothing of the kernel is linked:
+
+```toml
+ikigai-encrypt = { version = "0.2.1", default-features = false }   # binary age only
+```
+
+```rust
+use ikigai_encrypt::age::{open, parse_identities, parse_recipients, seal, Error, ExposeSecret, Identity};
+
+let me = Identity::generate();
+let identities = parse_identities(me.to_string().expose_secret()).unwrap();
+let recipients = parse_recipients(&me.to_public().to_string()).unwrap(); // refuses low order
+
+let sealed = seal(b"state", &recipients).unwrap(); // binary: starts `age-encryption.org/v1`
+assert_eq!(open(&sealed, &identities).unwrap(), b"state");
+assert_eq!(open(&sealed, &[Identity::generate()]).unwrap_err(), Error::NoMatchingKey);
+assert!(open(&sealed[..sealed.len() - 1], &identities).unwrap_err().is_corrupt());
+```
+
+With `armor` (on by default), `seal_armored` writes `-----BEGIN AGE ENCRYPTED FILE-----`
+text and `open` reads either form. The module is named for the format, so another one (HPKE,
+RFC 9180) would sit beside it as `ikigai_encrypt::hpke`.
 
 ## Using it from a host
 

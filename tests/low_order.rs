@@ -15,6 +15,8 @@
 //! control, does not. The first two are the audit's own reproductions; the rest are
 //! the libsodium small-order blocklist plus the non-canonical encodings X25519 reduces
 //! to the same points (u ≥ p, and bit 255 set, which X25519 ignores).
+// The endpoints are a default feature; a `--no-default-features` build has none to test.
+#![cfg(feature = "endpoints")]
 
 use age::x25519::Identity;
 use ikigai_core::{
