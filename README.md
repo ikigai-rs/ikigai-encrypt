@@ -92,6 +92,18 @@ or any error text a caller can provoke (including passing the identity itself as
 
 ## Changes
 
+### 0.3.0
+
+- **On `ikigai-core` 0.2.0**, the streams release (ledger #2261). The old `0.1.89` pin
+  meant <0.2.0 under 0.x rules, so this is a deliberate move. Nothing in the crate
+  changed to build on it.
+- Tests run `ikigai-conformance` 0.11.0, which turns on FAILURES and DATATYPES by
+  default: both run here and find nothing (no action states failure classes, and no face
+  writes Turtle).
+- Version call: **minor (0.3.0)**. Core's types are in the endpoints' API, so a host on
+  core 0.1 cannot take this release. The library face (`default-features = false`) does
+  not link core and is unchanged.
+
 ### 0.2.1
 
 - **A library face, `ikigai_encrypt::age`** (ledger #2016): `seal` (binary age),
@@ -164,7 +176,7 @@ The endpoints are one face; `ikigai_encrypt::age` is the other, with no kernel, 
 that seals its own files. Take it without the defaults and nothing of the kernel is linked:
 
 ```toml
-ikigai-encrypt = { version = "0.2.1", default-features = false }   # binary age only
+ikigai-encrypt = { version = "0.3.0", default-features = false }   # binary age only
 ```
 
 ```rust
