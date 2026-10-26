@@ -306,7 +306,7 @@ fn suite(ciphertext: &str) -> Suite {
 }
 
 /// The walk saw the two module endpoints and the two fixture keys, one Source
-/// action each, skipped nothing but FAILURES and opted nothing out. A third module endpoint
+/// action each, skipped no check and opted nothing out. A third module endpoint
 /// bound without a line here would be held to a weaker standard; a declared id
 /// that binds nothing is a stale list.
 fn assert_shape(report: &Report) {
@@ -315,16 +315,17 @@ fn assert_shape(report: &Report) {
         "encrypt, decrypt, key-recipient, key-identity: {report}"
     );
     assert_eq!(report.actions, 4, "one Source action each: {report}");
-    // FAILURES (0.10.0) is off unless a suite opts in with `check_failures()`: that is
-    // the next wave, so exactly that one check is skipped and no other.
+    // Since 0.11.0 every check runs by default, FAILURES and DATATYPES included. No
+    // action here states failure classes, so FAILURES compares nothing (the report says
+    // so), and no face writes a typed ik: literal, so DATATYPES has nothing to refuse.
     assert_eq!(
         report
             .checks
             .skipped()
             .map(|c| c.label())
             .collect::<Vec<_>>(),
-        ["FAILURES"],
-        "every check but FAILURES runs: {report}"
+        Vec::<&str>::new(),
+        "every check runs: {report}"
     );
     assert!(report.declared.opted_out.is_empty(), "{report}");
     assert!(report.declared.pure.is_empty(), "{report}");
