@@ -6,8 +6,8 @@ use crate::age as lib;
 use crate::CAP_DECRYPT;
 use async_trait::async_trait;
 use ikigai_core::{
-    space_iri, ArgRef, ArgSpec, Description, Endpoint, EndpointSpace, Error, Exact, Invocation,
-    Iri, ReprType, Representation, Request, Result, Verb,
+    space_iri, ArgRef, ArgSpec, Body, Description, Endpoint, EndpointSpace, Error, Exact,
+    FailureClass, Invocation, Iri, ReprType, Representation, Request, Result, Verb,
 };
 
 /// The `class` of a key-resource argument: an RDF resource (resolved through the kernel).
@@ -79,19 +79,31 @@ async fn input_bytes(inv: &Invocation<'_>, who: &str) -> Result<Vec<u8>> {
             .await
             .map(|repr| repr.bytes)
             .map_err(|e| sub_failure(who, name, iri, e)),
-        ArgRef::Content(_) => Err(not_content_addressed(who, name)),
+        ArgRef::Content(_) => inv
+            .collect(inv.content_body(name).await?)
+            .await
+            .map(|b| b.to_vec()),
     }
 }
 
-/// The refusal for an `ArgRef::Content` argument. An invocation carries no content
-/// store, so an endpoint has no way to read a content-addressed value; saying so beats
-/// the `MissingArgument` it used to be reported as.
+/// Resolve every input form through the core seam. Keep argument context on a
+/// failed reference resolution; a run budget failure retains its own class.
+async fn input_body(inv: &Invocation<'_>, who: &str) -> Result<Body> {
+    let (name, arg) = input_arg(inv)?;
+    inv.content_body(name).await.map_err(|error| match arg {
+        ArgRef::Reference(iri) if !matches!(error, Error::OverBudget { .. }) => {
+            sub_failure(who, name, iri, error)
+        }
+        _ => error,
+    })
+}
+
+/// Key arguments name resources, rather than content-addressed key text.
 fn not_content_addressed(who: &str, name: &str) -> Error {
     Error::InvalidArgument {
         name: name.to_string(),
         detail: format!(
-            "{who}: a content-addressed value cannot be read here (an invocation carries no \
-             content store); pass `{name}` inline or by reference"
+            "{who}: a content-addressed key is not a resource IRI; pass `{name}` inline or by reference"
         ),
     }
 }
@@ -162,7 +174,7 @@ fn sub_failure(who: &str, arg: &str, iri: &Iri, error: Error) -> Error {
 /// `key` for decrypt) and name the line, never its text. For an open: not age at all is
 /// `InvalidArgument` on `in`; a key that does not match, or a header that was altered, is
 /// `Denied`; a payload that does not authenticate is an `Endpoint` failure.
-fn kernel_error(who: &str, error: lib::Error) -> Error {
+pub(crate) fn kernel_error(who: &str, error: lib::Error) -> Error {
     let (arg, kind, expected) = if who == "urn:encrypt:decrypt" {
         ("key", "identity", "AGE-SECRET-KEY-1…")
     } else {
@@ -226,6 +238,20 @@ impl Endpoint for Encrypt {
         Ok(armored(text))
     }
 
+    async fn invoke_body(&self, inv: &Invocation<'_>) -> Result<Representation<Body>> {
+        const WHO: &str = "urn:encrypt:encrypt";
+        source_only(WHO, inv.request.verb)?;
+        input_arg(inv)?;
+        let to = key_iri(inv, "to", WHO)?;
+        let input = input_body(inv, WHO).await?;
+        let keys = resolve_key(inv, &to, "to", WHO).await?;
+        let recipients = lib::parse_recipients(&keys).map_err(|e| kernel_error(WHO, e))?;
+        Ok(Representation::from_body(
+            ReprType::new("text/plain").with_param("charset", "utf-8"),
+            lib::body::seal(input, &recipients)?,
+        ))
+    }
+
     fn name(&self) -> &str {
         "encrypt"
     }
@@ -238,7 +264,8 @@ impl Endpoint for Encrypt {
                  armored age ciphertext. Pass the bytes as `in` (or pipe them as `content`) and \
                  the recipient key resource as `to=` (a `urn:…`/`file:` resolving to one or more \
                  `age1…` recipients, one per line — multi-recipient, so an inbox seals to every \
-                 device). Open: anyone may encrypt to a public key. No keygen here.",
+                 device). Body calls stream through age without collecting the input. Open: anyone \
+                 may encrypt to a public key. No keygen here.",
             )
             .verb(Verb::Source)
             .verb(Verb::Meta)
@@ -260,6 +287,13 @@ impl Endpoint for Encrypt {
                     .class(RDFS_RESOURCE),
             )
             .output("text/plain;charset=utf-8")
+            .fails(FailureClass::OverBudget)
+            .fails(FailureClass::Permanent)
+            .fails(FailureClass::Denied)
+            .fails(FailureClass::Transient)
+            .fails(FailureClass::RetryAfter)
+            .fails(FailureClass::Refused)
+            .fails(FailureClass::Unknown)
     }
 }
 
@@ -298,6 +332,34 @@ impl Endpoint for Decrypt {
         Ok(Representation::new(ReprType::new("application/octet-stream"), plaintext).cacheable())
     }
 
+    async fn invoke_body(&self, inv: &Invocation<'_>) -> Result<Representation<Body>> {
+        const WHO: &str = "urn:encrypt:decrypt";
+        source_only(WHO, inv.request.verb)?;
+        if !inv.capability.allows(CAP_DECRYPT) {
+            return Err(Error::Denied(format!(
+                "{WHO} requires the {CAP_DECRYPT} capability"
+            )));
+        }
+        input_arg(inv)?;
+        let key = key_iri(inv, "key", WHO)?;
+        let input = input_body(inv, WHO).await?;
+        let keys = resolve_key(inv, &key, "key", WHO).await?;
+        let identities = lib::parse_identities(&keys).map_err(|e| kernel_error(WHO, e))?;
+        let limit = inv
+            .memory_budget()
+            .map_or(ikigai_core::DEFAULT_STREAM_MEMORY, |b| b.remaining());
+        let buffered = matches!(input, Body::Bytes(_));
+        let body = lib::body::open(input, identities, limit).await?;
+        // Keep the existing buffer/cache behavior for an already buffered input.
+        // Streamed inputs never take this collecting path.
+        let body = if buffered {
+            Body::Bytes(inv.collect(body).await?)
+        } else {
+            body
+        };
+        Ok(Representation::from_body(ReprType::new("application/octet-stream"), body).cacheable())
+    }
+
     fn name(&self) -> &str {
         "decrypt"
     }
@@ -310,7 +372,8 @@ impl Endpoint for Decrypt {
                  Pass the ciphertext as `in` (or piped `content`) and the identity resource as \
                  `key=` (an age identity file: one or more `AGE-SECRET-KEY-1…` lines, `#` \
                  comments allowed). Requires the urn:cap:decrypt capability (it wields the \
-                 private key); a wrong key or tampered ciphertext is a typed Denied/error.",
+                 private key); a wrong key or tampered ciphertext is a typed Denied/error. Streamed \
+                 body inputs decrypt incrementally; plaintext past the run byte budget is OverBudget.",
             )
             .verb(Verb::Source)
             .verb(Verb::Meta)
@@ -331,6 +394,13 @@ impl Endpoint for Decrypt {
                     .class(RDFS_RESOURCE),
             )
             .output("application/octet-stream")
+            .fails(FailureClass::OverBudget)
+            .fails(FailureClass::Permanent)
+            .fails(FailureClass::Denied)
+            .fails(FailureClass::Transient)
+            .fails(FailureClass::RetryAfter)
+            .fails(FailureClass::Refused)
+            .fails(FailureClass::Unknown)
     }
 }
 

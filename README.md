@@ -92,6 +92,31 @@ or any error text a caller can provoke (including passing the identity itself as
 
 ## Changes
 
+### 0.3.1
+
+- Input content IDs now resolve through `Invocation::content_body` when the kernel
+  has a content store. `in` still takes precedence over piped `content`; key arguments
+  still name resource IRIs.
+- Both endpoints implement `invoke_body`. Streamed inputs pass through age's own
+  `StreamWriter`/`StreamReader` and armor adapters with bounded transfer buffers, no
+  whole-input collection, and no background producer. Dropping the output stops input
+  reads. Encryption stays randomized and uncacheable.
+- The body decrypt path refuses plaintext beyond the run's byte budget with
+  `OverBudget`. Input failures, damaged payloads and truncated files end with an error,
+  never a clean shorter answer. Already buffered decrypt inputs keep the existing
+  buffered result and key-dependent caching, collected under the run's budget.
+- Buffer fragmented armor lines with futures' line reader to avoid age 0.11 async
+  armor bugs at short prefixes and `Pending` boundaries. Armor decoding remains in
+  age; an unterminated transport line beyond 64 KiB is `OverBudget`. Delayed trailing
+  garbage and upstream errors are checked before a clean end.
+- Declare endpoint failure classes, including upstream stream failures. Tests cover
+  content-store inputs, body/bytes equivalence (decrypt), equivalent plaintext and
+  format (randomized encrypt), early stopping, an 8 MiB generated round trip, exact
+  budget boundaries and terminal errors.
+- Patch release: no public API was added. Core's minimum is now 0.2.1; the library
+  face with `default-features = false` is unchanged. Conformance stays at 0.11.0
+  because 0.12.0 was not available on crates.io when this change was made.
+
 ### 0.3.0
 
 - **On `ikigai-core` 0.2.0**, the streams release (ledger #2261). The old `0.1.89` pin

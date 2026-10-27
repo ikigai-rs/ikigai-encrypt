@@ -405,3 +405,6 @@ mod tests {
         assert_eq!(contained(|| Ok(7)).unwrap(), 7);
     }
 }
+
+#[cfg(feature = "endpoints")]
+pub(crate) mod body;
