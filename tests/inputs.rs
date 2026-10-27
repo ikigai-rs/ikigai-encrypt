@@ -390,15 +390,14 @@ fn a_key_argument_that_is_not_an_iri_is_invalid_not_missing() {
     assert!(invalid(&err, "to").contains("must be an IRI"), "{err:?}");
 }
 
-/// A content-addressed argument (`ArgRef::Content`) cannot be read by an endpoint (an
-/// invocation carries no content store): a typed refusal that says so, not
-/// `MissingArgument`.
+/// With no content store installed, input content IDs report Unsupported; key
+/// arguments still require a resource IRI.
 #[test]
-fn a_content_addressed_argument_is_refused_by_name() {
+fn content_input_needs_a_store_and_content_keys_need_an_iri() {
     let f = fixture();
     let cid = || ArgRef::Content(ContentId::of(b"big"));
     let err = seal(&f, vec![("in", cid()), ("to", inline(b"urn:key:pub"))]).unwrap_err();
-    assert!(invalid(&err, "in").contains("content-addressed"), "{err:?}");
+    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
     let err = seal(&f, vec![("in", inline(b"x")), ("to", cid())]).unwrap_err();
     assert!(invalid(&err, "to").contains("content-addressed"), "{err:?}");
 }
@@ -559,4 +558,29 @@ fn only_the_declared_verb_is_answered() {
             "decrypt {verb:?}: {err:?}"
         );
     }
+}
+
+/// Ledger #2284: an installed content store supplies the input bytes.
+#[test]
+fn content_store_input_round_trips() {
+    let mut f = fixture();
+    let store = Arc::new(ikigai_core::MemoryContentStore::new(1024));
+    let held = store.put(BINARY.to_vec()).unwrap();
+    f.kernel = f.kernel.with_content_store(store);
+    let sealed = seal(
+        &f,
+        vec![
+            ("in", ArgRef::Content(held.id())),
+            ("to", inline(b"urn:key:pub")),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        open(
+            &f,
+            vec![("in", inline(&sealed)), ("key", inline(b"urn:key:id"))]
+        )
+        .unwrap(),
+        BINARY
+    );
 }
