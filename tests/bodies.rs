@@ -233,8 +233,10 @@ fn collected_decrypt_body_equals_bytes_for_binary_and_armor() {
 fn streamed_encrypt_is_armored_and_decrypts_like_the_bytes_answer() {
     block_on(async {
         let id = Identity::generate();
-        let k = kernel(id.to_public().to_string());
-        let req = request("encrypt", ArgRef::Inline(b"hello".to_vec()));
+        let store = Arc::new(ikigai_core::MemoryContentStore::new(1024));
+        let held = store.put(b"hello".to_vec()).unwrap();
+        let k = kernel(id.to_public().to_string()).with_content_store(store);
+        let req = request("encrypt", ArgRef::Content(held.id()));
         let capability = Capability::root();
         let bindings = ikigai_core::Bindings::default();
         let invocation = Invocation::with_issuer(&req, &bindings, &capability, &k);
@@ -426,6 +428,23 @@ fn decrypt_reads_content_store_replays_incrementally() {
                 polled.load(Ordering::SeqCst) < chunks,
                 "dropping the answer stops reads"
             );
+            // Reopen the same store replay through each endpoint method. The
+            // actual streamed answer, collected, equals the legacy bytes answer.
+            let req = request("decrypt", ArgRef::Content(held.id()));
+            let capability = Capability::root();
+            let bindings = ikigai_core::Bindings::default();
+            let invocation = Invocation::with_issuer(&req, &bindings, &capability, &k);
+            let bytes = ikigai_encrypt::Decrypt.invoke(&invocation).await.unwrap();
+            let body = ikigai_encrypt::Decrypt
+                .invoke_body(&invocation)
+                .await
+                .unwrap();
+            assert!(matches!(body.bytes, Body::Once(_)));
+            assert_eq!(
+                body.bytes.collect(plain.len()).await.unwrap().as_ref(),
+                bytes.bytes
+            );
+            assert_eq!(bytes.bytes, plain);
         }
     });
 }
