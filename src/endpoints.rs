@@ -10,8 +10,8 @@ use ikigai_core::{
     FailureClass, Invocation, Iri, ReprType, Representation, Request, Result, Verb,
 };
 
-/// The `class` of a key-resource argument: an RDF resource (resolved through the kernel).
-const RDFS_RESOURCE: &str = "http://www.w3.org/2000/01/rdf-schema#Resource";
+/// The `class` of a key-resource name: a URI, resolved by the endpoint through the kernel.
+const XSD_ANY_URI: &str = "http://www.w3.org/2001/XMLSchema#anyURI";
 /// The `class` of the plaintext/ciphertext byte arguments.
 const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 
@@ -112,7 +112,7 @@ fn not_content_addressed(who: &str, name: &str) -> Error {
 ///
 /// Inline, the argument is the IRI's text; by reference (`ArgRef::Reference`, core's
 /// own spelling of "another resolvable resource", and the argument's declared class
-/// is `rdfs:Resource`) it IS the IRI, and resolves exactly as the by-name spelling
+/// is `xsd:anyURI`) it IS the IRI, and resolves exactly as the by-name spelling
 /// does. Anything present that is not an IRI is an `InvalidArgument` naming the
 /// argument, never `MissingArgument`. The error does NOT echo the value: a caller who
 /// passes the identity itself as `key=` would otherwise read their private key back
@@ -271,20 +271,21 @@ impl Endpoint for Encrypt {
             .verb(Verb::Meta)
             .input(
                 ArgSpec::new("in")
+                    .reads_body()
                     .summary("the bytes to encrypt, any bytes (positional or piped as `content`)")
                     .class(XSD_STRING),
             )
             // ONE resource IRI, whose bytes list one or more `age1…` recipients (one per
             // line). The list lives inside the resource, so the argument itself is a single
-            // reference and `rdfs:Resource` is its true class; a by-value recipient LIST
-            // would have no ArgSpec spelling (conformance PENDING #15) and is not offered.
+            // name: `xsd:anyURI` preserves it through kernel reference settlement. A recipient
+            // LIST would have no ArgSpec spelling (conformance PENDING #15) and is not offered.
             .input(
                 ArgSpec::new("to")
                     .summary(
                         "recipient public-key resource: ONE IRI whose bytes list one or more \
                          age1… recipients, one per line",
                     )
-                    .class(RDFS_RESOURCE),
+                    .class(XSD_ANY_URI),
             )
             .output("text/plain;charset=utf-8")
             .fails(FailureClass::OverBudget)
@@ -380,6 +381,7 @@ impl Endpoint for Decrypt {
             .requires(CAP_DECRYPT)
             .input(
                 ArgSpec::new("in")
+                    .reads_body()
                     .summary(
                         "the age ciphertext, armored or binary (positional or piped as `content`)",
                     )
@@ -391,7 +393,7 @@ impl Endpoint for Decrypt {
                         "the owner's identity resource: an age identity file \
                          (AGE-SECRET-KEY-1… lines)",
                     )
-                    .class(RDFS_RESOURCE),
+                    .class(XSD_ANY_URI),
             )
             .output("application/octet-stream")
             .fails(FailureClass::OverBudget)

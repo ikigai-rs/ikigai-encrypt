@@ -59,7 +59,8 @@
 //!   `key=`, a `to=` pointing at the private key by mistake, a key resource
 //!   holding garbage — are searched for the identity's secret tail.
 //!
-//! No RDF face, so no namespace; no opt-outs; NAMES runs (both ids are kebab-case).
+//! No RDF face, so no namespace; NAMES runs (both ids are kebab-case).
+//! BODY-INPUTS is waived only for randomized encryption; decryption compares all transports.
 // The endpoints are a default feature; a `--no-default-features` build has none to test.
 #![cfg(feature = "endpoints")]
 
@@ -68,8 +69,9 @@ use age::x25519::Identity;
 use async_trait::async_trait;
 use ikigai_conformance::{Check, Fixture, Report, Suite};
 use ikigai_core::{
-    ArgRef, Capability, Description, Endpoint, Error, Exact, Expiry, Invocation, Iri, Kernel,
-    MetaRenderer, ReprType, Representation, Request, Result as CoreResult, Verb,
+    ArgRef, Capability, Description, Endpoint, EndpointSpace, Error, Exact, Expiry, Invocation,
+    Iri, Kernel, MemoryContentStore, MetaRenderer, ReprType, Representation, Request,
+    Result as CoreResult, Verb,
 };
 use ikigai_encrypt::CAP_DECRYPT;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -94,6 +96,10 @@ const IDENTITY_THREAD: &str = "urn:conformance:keystore:identity";
 
 /// The bytes every fired action seals or opens.
 const MESSAGE: &str = "conformance";
+
+const RANDOMIZED_ENCRYPTION: &str =
+    "age encryption uses fresh randomness per call; independent ciphertext bytes cannot agree. \
+     tests/bodies.rs checks streamed encryption by decrypting its output instead.";
 
 /// The bech32 prefix every age identity shares; what follows it is the secret.
 const IDENTITY_PREFIX: &str = "AGE-SECRET-KEY-1";
@@ -182,6 +188,8 @@ impl MetaRenderer for EveryField {
 /// golden thread of the keystore's own, or every key live.
 struct Keystore {
     kernel: Kernel,
+    space: Arc<EndpointSpace>,
+    content_store: Arc<MemoryContentStore>,
     keys: Keypair,
     recipient: Arc<RwLock<String>>,
     identity: Arc<RwLock<String>>,
@@ -215,8 +223,13 @@ fn keystore(threaded: bool) -> Keystore {
                 reads: Arc::clone(&identity_reads),
             },
         );
+    let space = Arc::new(space);
+    let content_store = Arc::new(MemoryContentStore::new(1024 * 1024));
     Keystore {
-        kernel: Kernel::with_meta_renderer(Arc::new(space), Arc::new(EveryField)),
+        kernel: Kernel::with_meta_renderer(space.clone(), Arc::new(EveryField))
+            .with_content_store(content_store.clone()),
+        space,
+        content_store,
         keys,
         recipient,
         identity,
@@ -290,8 +303,11 @@ fn decrypt(kernel: &Kernel, ciphertext: &str) -> CoreResult<Representation> {
 /// one fixture per action, and `space()` declared self-named. The kernel under
 /// test is `space()` extended with the fixture keys, which is anonymous (a bind
 /// drops the name); the SPACE-NAME check is about the constructor, not that kernel.
-fn suite(ciphertext: &str) -> Suite {
+fn suite(store: &Keystore, ciphertext: &str) -> Suite {
     Suite::new()
+        .body_space(store.space.clone())
+        .body_input_store(store.content_store.clone())
+        .opt_out_check(ENCRYPT, Check::BodyInputs, RANDOMIZED_ENCRYPTION)
         .self_named_space("encrypt", ikigai_encrypt::space)
         .fixture(
             Fixture::new(ENCRYPT, Verb::Source)
@@ -306,10 +322,11 @@ fn suite(ciphertext: &str) -> Suite {
 }
 
 /// The walk saw the two module endpoints and the two fixture keys, one Source
-/// action each, skipped no check and opted nothing out. A third module endpoint
-/// bound without a line here would be held to a weaker standard; a declared id
+/// action each, skipped no check and waived only randomized encryption transport
+/// equality. A third module endpoint bound without a line here would be held to a
+/// weaker standard; a declared id
 /// that binds nothing is a stale list.
-fn assert_shape(report: &Report) {
+fn assert_shape(report: &Report, threaded: bool) {
     assert_eq!(
         report.endpoints, 4,
         "encrypt, decrypt, key-recipient, key-identity: {report}"
@@ -328,6 +345,42 @@ fn assert_shape(report: &Report) {
         "every check runs: {report}"
     );
     assert!(report.declared.opted_out.is_empty(), "{report}");
+    assert_eq!(report.declared.opted_out_checks.len(), 1, "{report}");
+    let waiver = &report.declared.opted_out_checks[0];
+    assert_eq!(waiver.endpoint, ENCRYPT, "{report}");
+    assert_eq!(waiver.check, Check::BodyInputs, "{report}");
+    assert_eq!(waiver.reason, RANDOMIZED_ENCRYPTION, "{report}");
+    // Only volatile answers may remain unprobed; missing seams must fail here.
+    assert_eq!(
+        report.unprobed.len(),
+        if threaded { 1 } else { 4 },
+        "{report}"
+    );
+    for unprobed in report.unprobed.iter() {
+        assert_eq!(unprobed.check, Check::Bodies, "{report}");
+        assert_eq!(unprobed.verb, Verb::Source, "{report}");
+        assert!(
+            unprobed
+                .reason
+                .starts_with("uncacheable, time-varying, or volatile answer:"),
+            "{report}"
+        );
+        if threaded {
+            assert_eq!(unprobed.endpoint, ENCRYPT, "{report}");
+        }
+    }
+    let comparisons = &report.declared.evidence.body_inputs;
+    assert_eq!(comparisons.len(), 3, "{report}");
+    for transport in ["reference", "stored content id", "one-shot attached body"] {
+        assert!(
+            comparisons.iter().any(|c| c.endpoint == DECRYPT
+                && c.verb == Verb::Source
+                && c.input == "in"
+                && c.transport == transport),
+            "{report}"
+        );
+    }
+
     assert!(report.declared.pure.is_empty(), "{report}");
     assert!(report.declared.namespaces.is_empty(), "{report}");
 }
@@ -342,20 +395,20 @@ fn conforms() {
     let store = keystore(true);
     let ciphertext = encrypt(&store.kernel, MESSAGE);
 
-    let report = suite(&ciphertext)
+    let report = suite(&store, &ciphertext)
         .cacheable(DECRYPT)
         .run_blocking(&store.kernel);
     // Printed even when clean (`--nocapture`): the report is the record.
     eprintln!("[threaded keystore]\n{report}");
     assert!(report.is_clean(), "{report}");
-    assert_shape(&report);
+    assert_shape(&report, true);
     assert_eq!(report.declared.cacheable, [DECRYPT], "{report}");
     assert_eq!(
         ikigai_core::space_iri("encrypt").as_str(),
         ikigai_encrypt::SPACE_ID
     );
 
-    let report = suite(&ciphertext)
+    let report = suite(&store, &ciphertext)
         .cacheable(DECRYPT)
         .cacheable(ENCRYPT)
         .run_blocking(&store.kernel);
@@ -369,7 +422,7 @@ fn conforms() {
         finding.detail.contains("declared cacheable"),
         "the finding names the declaration: {finding}"
     );
-    assert_shape(&report);
+    assert_shape(&report, true);
 }
 
 /// Encryption is not a function of its inputs: two sealings of one plaintext to
@@ -438,12 +491,12 @@ fn over_a_live_keystore_nothing_is_cached() {
         "a plaintext over an uncacheable key is not cached"
     );
 
-    let report = suite(&ciphertext).run_blocking(&store.kernel);
+    let report = suite(&store, &ciphertext).run_blocking(&store.kernel);
     eprintln!("[live keystore, undeclared]\n{report}");
     assert!(report.is_clean(), "{report}");
-    assert_shape(&report);
+    assert_shape(&report, false);
 
-    let report = suite(&ciphertext)
+    let report = suite(&store, &ciphertext)
         .cacheable(DECRYPT)
         .run_blocking(&store.kernel);
     eprintln!("[live keystore, declared cacheable]\n{report}");
@@ -451,6 +504,7 @@ fn over_a_live_keystore_nothing_is_cached() {
     let finding = &report.findings[0];
     assert_eq!(finding.check, Check::Cacheable, "{report}");
     assert_eq!(finding.endpoint, DECRYPT, "{report}");
+    assert_shape(&report, false);
     assert!(
         finding.detail.contains("declared cacheable"),
         "the finding names the declaration: {finding}"
@@ -761,25 +815,25 @@ fn the_manifold_carries_no_private_key() {
 /// The contract as the manifold states it: `encrypt` one open Source taking `in`
 /// and `to`, `decrypt` one Source under `urn:cap:decrypt` taking `in` and `key`;
 /// every input required, every input classed with an IRI — the scalars
-/// `xsd:string`, the key references `rdfs:Resource`.
+/// `xsd:string`, the key names `xsd:anyURI`.
 #[test]
 fn the_manifold_states_the_contract() {
     let store = keystore(true);
     let xsd_string = "http://www.w3.org/2001/XMLSchema#string";
-    let rdfs_resource = "http://www.w3.org/2000/01/rdf-schema#Resource";
+    let xsd_any_uri = "http://www.w3.org/2001/XMLSchema#anyURI";
     let contract = [
         (
             ENCRYPT_IRI,
             ENCRYPT,
             Vec::<&str>::new(),
-            vec![("in", xsd_string), ("to", rdfs_resource)],
+            vec![("in", xsd_string), ("to", xsd_any_uri)],
             "text/plain",
         ),
         (
             DECRYPT_IRI,
             DECRYPT,
             vec![CAP_DECRYPT],
-            vec![("in", xsd_string), ("key", rdfs_resource)],
+            vec![("in", xsd_string), ("key", xsd_any_uri)],
             "application/octet-stream",
         ),
     ];
