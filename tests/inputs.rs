@@ -326,9 +326,9 @@ fn piped_content_alone_is_read_as_bytes() {
 
 // ------------------------------------------------- bug 5: by reference, bad bytes
 
-/// Bug 5: `key` and `to` are classed `rdfs:Resource`, and core's own spelling of "a
-/// reference to another resolvable resource" is `ArgRef::Reference`. It is resolved
-/// exactly like a by-name IRI.
+/// Bug 5: `key` and `to` name resources (`xsd:anyURI`), so a reference must
+/// preserve the IRI instead of substituting the key bytes before invocation.
+/// Both endpoints must resolve it exactly like an inline IRI.
 #[test]
 fn keys_passed_by_reference_resolve_like_keys_passed_by_name() {
     let f = fixture();

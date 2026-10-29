@@ -24,8 +24,8 @@ armor = ["age/armor"]
 # The published kernel, consumed from crates.io — the SAME version the hosts use. 0.2.0 is
 # the streams release (ledger #2261); the old "0.1.89" pin meant <0.2.0 under 0.x rules, so
 # this is a deliberate move, and core's types are in this crate's API (hence 0.3.0).
-# 0.2.1 supplies content_body and the content-store seam used by the body endpoints.
-ikigai-core = { version = "0.2.1", optional = true }
+# 0.2.4 supplies reads_body so the kernel leaves streamed inputs for the endpoints.
+ikigai-core = { version = "0.2.4", optional = true }
 async-trait = { version = "0.1", optional = true }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"], optional = true }
 
@@ -57,5 +57,5 @@ age = { version = "0.11", default-features = false }
 # core 0.1.105's contract-shape checks (REQUIRED probes input groups, OUTPUTS honors
 # output_from, PIPELINE named-only line, VALIDATE refuses a default on a binding) and
 # RECOMPUTE; 0.10 adds FAILURES, off unless a suite opts in. 0.11 is the core 0.2.0 line and
-# turns FAILURES and DATATYPES on by default. The caret reads as a range: <0.12.0.
-ikigai-conformance = "0.11.0"
+# turns FAILURES and DATATYPES on by default. 0.12 adds BODIES and BODY-INPUTS.
+ikigai-conformance = "0.12.0"
