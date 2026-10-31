@@ -234,6 +234,12 @@ that binds more doors onto it gets an anonymous space and names its own composit
 Native-focused: the `age` stack runs on the edge and the owner's devices (encrypt on the
 edge, decrypt on your laptops), not in the browser — so there is no wasm face.
 
+## Accessibility
+
+What people read from this crate is its refusals and errors, which name the argument and never
+echo a key. [ACCESSIBILITY.md](ACCESSIBILITY.md) says what that text is, the rules it follows,
+what is not tested, and how to report a barrier.
+
 ## License
 
 MIT OR Apache-2.0
