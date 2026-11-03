@@ -92,6 +92,14 @@ or any error text a caller can provoke (including passing the identity itself as
 
 ## Changes
 
+### 0.4.0
+
+- Move to `ikigai-core` 0.3.0 and `ikigai-conformance` 0.14.0 for the scoped
+  content store (ledger #2965). Hosts must hold input content under the deliverer's
+  capability; principal-less holds and `put` / `put_replay` are root-only.
+- Minor release because the endpoint API exposes core types. Tests cover buffered
+  and replay inputs held for the caller and refusal across principals.
+
 ### 0.3.1
 
 - Input content IDs now resolve through `Invocation::content_body` when the kernel

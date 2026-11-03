@@ -560,27 +560,38 @@ fn only_the_declared_verb_is_answered() {
     }
 }
 
-/// Ledger #2284: an installed content store supplies the input bytes.
+/// Ledger #2284 and #2965: inputs resolve under the deliverer's capability.
 #[test]
 fn content_store_input_round_trips() {
-    let mut f = fixture();
-    let store = Arc::new(ikigai_core::MemoryContentStore::new(1024));
-    let held = store.put(BINARY.to_vec()).unwrap();
-    f.kernel = f.kernel.with_content_store(store);
-    let sealed = seal(
-        &f,
-        vec![
-            ("in", ArgRef::Content(held.id())),
-            ("to", inline(b"urn:key:pub")),
-        ],
-    )
-    .unwrap();
-    assert_eq!(
-        open(
-            &f,
-            vec![("in", inline(&sealed)), ("key", inline(b"urn:key:id"))]
-        )
-        .unwrap(),
-        BINARY
-    );
+    for capability in [
+        Capability::root(),
+        nobody().with_principal("urn:person:alice").unwrap(),
+    ] {
+        let mut f = fixture();
+        let store = Arc::new(ikigai_core::MemoryContentStore::new(1024));
+        let held = store.put_for(&capability, BINARY.to_vec()).unwrap();
+        f.kernel = f.kernel.with_content_store(store);
+        let request = req(
+            Verb::Source,
+            "urn:encrypt:encrypt",
+            vec![
+                ("in", ArgRef::Content(held.id())),
+                ("to", inline(b"urn:key:pub")),
+            ],
+        );
+        let other = nobody().with_principal("urn:person:bob").unwrap();
+        assert!(matches!(
+            issue(&f.kernel, request.clone(), &other),
+            Err(Error::NotFound(_))
+        ));
+        let sealed = issue(&f.kernel, request, &capability).unwrap().bytes;
+        assert_eq!(
+            open(
+                &f,
+                vec![("in", inline(&sealed)), ("key", inline(b"urn:key:id"))]
+            )
+            .unwrap(),
+            BINARY
+        );
+    }
 }
