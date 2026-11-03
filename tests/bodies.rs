@@ -234,10 +234,10 @@ fn streamed_encrypt_is_armored_and_decrypts_like_the_bytes_answer() {
     block_on(async {
         let id = Identity::generate();
         let store = Arc::new(ikigai_core::MemoryContentStore::new(1024));
-        let held = store.put(b"hello".to_vec()).unwrap();
+        let capability = Capability::root();
+        let held = store.put_for(&capability, b"hello".to_vec()).unwrap();
         let k = kernel(id.to_public().to_string()).with_content_store(store);
         let req = request("encrypt", ArgRef::Content(held.id()));
-        let capability = Capability::root();
         let bindings = ikigai_core::Bindings::default();
         let invocation = Invocation::with_issuer(&req, &bindings, &capability, &k);
         let bytes = ikigai_encrypt::Encrypt.invoke(&invocation).await.unwrap();
@@ -408,12 +408,22 @@ fn decrypt_reads_content_store_replays_incrementally() {
             let chunks = ciphertext.len().div_ceil(512);
             let polled = Arc::new(AtomicUsize::new(0));
             let store = Arc::new(ikigai_core::MemoryContentStore::new(1_000_000));
+            let capability = Capability::scoped(["urn:cap:decrypt"])
+                .with_principal("urn:person:alice")
+                .unwrap();
             let held = store
-                .put_replay(Chunked(ciphertext.into(), polled.clone()))
+                .put_replay_for(&capability, Chunked(ciphertext.into(), polled.clone()))
                 .unwrap();
             let k = kernel(id.to_string().expose_secret().to_string()).with_content_store(store);
             let req = request("decrypt", ArgRef::Content(held.id()));
-            let answer = k.issue_body(req, &Capability::root()).await.unwrap();
+            let other = Capability::scoped(["urn:cap:decrypt"])
+                .with_principal("urn:person:bob")
+                .unwrap();
+            assert!(matches!(
+                k.issue_body(req.clone(), &other).await,
+                Err(Error::NotFound(_))
+            ));
+            let answer = k.issue_body(req, &capability).await.unwrap();
             assert!(matches!(answer.bytes, Body::Once(_)));
             assert!(polled.load(Ordering::SeqCst) < chunks);
             let mut stream = answer.bytes.into_stream();
@@ -431,7 +441,6 @@ fn decrypt_reads_content_store_replays_incrementally() {
             // Reopen the same store replay through each endpoint method. The
             // actual streamed answer, collected, equals the legacy bytes answer.
             let req = request("decrypt", ArgRef::Content(held.id()));
-            let capability = Capability::root();
             let bindings = ikigai_core::Bindings::default();
             let invocation = Invocation::with_issuer(&req, &bindings, &capability, &k);
             let bytes = ikigai_encrypt::Decrypt.invoke(&invocation).await.unwrap();

@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-encrypt"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Public-key encryption module for ikigai — the dual of ikigai-sign. `urn:encrypt:encrypt` (open) seals bytes to one or more recipient public keys (age / X25519); `urn:encrypt:decrypt` (requires `urn:cap:decrypt`) opens them with a kernel-resolved identity. Keys are age recipients/identities resolved through the kernel — no keygen here (that is the secret module's job). Multi-recipient so an inbox can be encrypted to all of an owner's devices at once."
@@ -21,11 +21,10 @@ endpoints = ["armor", "dep:ikigai-core", "dep:async-trait", "dep:futures", "age/
 armor = ["age/armor"]
 
 [dependencies]
-# The published kernel, consumed from crates.io — the SAME version the hosts use. 0.2.0 is
-# the streams release (ledger #2261); the old "0.1.89" pin meant <0.2.0 under 0.x rules, so
-# this is a deliberate move, and core's types are in this crate's API (hence 0.3.0).
-# 0.2.4 supplies reads_body so the kernel leaves streamed inputs for the endpoints.
-ikigai-core = { version = "0.2.4", optional = true }
+# Core 0.3.0 scopes held content to its deliverer and makes principal-less holds
+# and ContentStore::put/put_replay root-only (scoped content store, ledger #2965).
+# Core types appear in our public endpoint API, so this requires a minor release.
+ikigai-core = { version = "0.3.0", optional = true }
 async-trait = { version = "0.1", optional = true }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"], optional = true }
 
@@ -57,5 +56,6 @@ age = { version = "0.11", default-features = false }
 # core 0.1.105's contract-shape checks (REQUIRED probes input groups, OUTPUTS honors
 # output_from, PIPELINE named-only line, VALIDATE refuses a default on a binding) and
 # RECOMPUTE; 0.10 adds FAILURES, off unless a suite opts in. 0.11 is the core 0.2.0 line and
-# turns FAILURES and DATATYPES on by default. 0.12 adds BODIES and BODY-INPUTS.
-ikigai-conformance = "0.12.0"
+# turns FAILURES and DATATYPES on by default. 0.12 adds BODIES and BODY-INPUTS;
+# 0.14 follows core 0.3.0 and its scoped content store (ledger #2965).
+ikigai-conformance = "0.14.0"
