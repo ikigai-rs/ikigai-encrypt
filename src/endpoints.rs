@@ -159,7 +159,10 @@ async fn resolve_key(inv: &Invocation<'_>, iri: &Iri, arg: &str, who: &str) -> R
 fn sub_failure(who: &str, arg: &str, iri: &Iri, error: Error) -> Error {
     let context = format!("{who}: reading the `{arg}` resource {iri}");
     match error {
-        Error::Denied(m) => Error::Denied(format!("{context}: {m}")),
+        Error::Denied(d) => {
+            let message = format!("{context}: {}", d.message());
+            Error::Denied(d.reworded(message))
+        }
         Error::Timeout(m) => Error::Timeout(format!("{context}: {m}")),
         Error::Unavailable(m) => Error::Unavailable(format!("{context}: {m}")),
         other => Error::InvalidArgument {
@@ -201,7 +204,7 @@ pub(crate) fn kernel_error(who: &str, error: lib::Error) -> Error {
             format!("{who}: `in` is not age ciphertext (armored or binary): {why}"),
         ),
         e @ (lib::Error::NoMatchingKey | lib::Error::Rejected(_)) => {
-            Error::Denied(format!("{who}: {e}"))
+            Error::Denied(format!("{who}: {e}").into())
         }
         e => Error::Endpoint(format!("{who}: {e}")),
     }
@@ -307,9 +310,9 @@ impl Endpoint for Decrypt {
         const WHO: &str = "urn:encrypt:decrypt";
         source_only(WHO, inv.request.verb)?;
         if !inv.capability.allows(CAP_DECRYPT) {
-            return Err(Error::Denied(format!(
-                "urn:encrypt:decrypt requires the {CAP_DECRYPT} capability"
-            )));
+            return Err(Error::Denied(
+                format!("urn:encrypt:decrypt requires the {CAP_DECRYPT} capability").into(),
+            ));
         }
         input_arg(inv)?;
         let key = key_iri(inv, "key", WHO)?;
@@ -337,9 +340,9 @@ impl Endpoint for Decrypt {
         const WHO: &str = "urn:encrypt:decrypt";
         source_only(WHO, inv.request.verb)?;
         if !inv.capability.allows(CAP_DECRYPT) {
-            return Err(Error::Denied(format!(
-                "{WHO} requires the {CAP_DECRYPT} capability"
-            )));
+            return Err(Error::Denied(
+                format!("{WHO} requires the {CAP_DECRYPT} capability").into(),
+            ));
         }
         input_arg(inv)?;
         let key = key_iri(inv, "key", WHO)?;

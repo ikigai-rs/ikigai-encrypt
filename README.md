@@ -92,6 +92,15 @@ or any error text a caller can provoke (including passing the identity itself as
 
 ## Changes
 
+### 0.5.0
+
+- Move to `ikigai-core` 0.4.0 and `ikigai-conformance` 0.15.0, the core 0.4.0 cascade
+  (scope opacity, structured denials; ledger #3893). Refusals are now core's
+  `Denial`; every refusal message reads exactly as before. A key resource's refusal,
+  passed up with its argument named, keeps the scopes core reports the caller lacked.
+- Minor release because the endpoint API exposes core types. The library face with
+  `default-features = false` does not link core and is unchanged.
+
 ### 0.4.0
 
 - Move to `ikigai-core` 0.3.0 and `ikigai-conformance` 0.14.0 for the scoped
