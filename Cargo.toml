@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-encrypt"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Public-key encryption module for ikigai — the dual of ikigai-sign. `urn:encrypt:encrypt` (open) seals bytes to one or more recipient public keys (age / X25519); `urn:encrypt:decrypt` (requires `urn:cap:decrypt`) opens them with a kernel-resolved identity. Keys are age recipients/identities resolved through the kernel — no keygen here (that is the secret module's job). Multi-recipient so an inbox can be encrypted to all of an owner's devices at once."
@@ -24,7 +24,9 @@ armor = ["age/armor"]
 # Core 0.3.0 scopes held content to its deliverer and makes principal-less holds
 # and ContentStore::put/put_replay root-only (scoped content store, ledger #2965).
 # Core types appear in our public endpoint API, so this requires a minor release.
-ikigai-core = { version = "0.3.0", optional = true }
+# Core 0.4.0 (scope opacity, structured denials; the cascade, ledger #3893). Again a
+# minor release: our endpoints speak core 0.4 types, which a core 0.3 consumer cannot mix.
+ikigai-core = { version = "0.4.0", optional = true }
 async-trait = { version = "0.1", optional = true }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"], optional = true }
 
@@ -57,5 +59,6 @@ age = { version = "0.11", default-features = false }
 # output_from, PIPELINE named-only line, VALIDATE refuses a default on a binding) and
 # RECOMPUTE; 0.10 adds FAILURES, off unless a suite opts in. 0.11 is the core 0.2.0 line and
 # turns FAILURES and DATATYPES on by default. 0.12 adds BODIES and BODY-INPUTS;
-# 0.14 follows core 0.3.0 and its scoped content store (ledger #2965).
-ikigai-conformance = "0.14.0"
+# 0.14 follows core 0.3.0 and its scoped content store (ledger #2965); 0.15 follows core
+# 0.4.0 (scope opacity, structured denials; the cascade, ledger #3893).
+ikigai-conformance = "0.15.0"
