@@ -92,6 +92,14 @@ or any error text a caller can provoke (including passing the identity itself as
 
 ## Changes
 
+### 0.5.1
+
+- A streamed decrypt bounds the age header at 1 MiB. age 0.11 holds the header in one
+  growing buffer until it parses, so a streamed input whose header never ended was read
+  and held whole, past the run's byte budget, and refused only at the end of input.
+  It is now `OverBudget` at the bound, binary or armored, and the input is not read
+  further. 1 MiB holds the stanzas of thousands of X25519 recipients.
+
 ### 0.5.0
 
 - Move to `ikigai-core` 0.4.0 and `ikigai-conformance` 0.15.0, the core 0.4.0 cascade

@@ -600,3 +600,100 @@ fn an_unterminated_armor_line_is_bounded() {
         );
     });
 }
+
+/// A header that never ends, `count` chunks after `first`, counting the chunks taken.
+fn endless_header(first: Vec<u8>, chunk: Vec<u8>, count: usize, polled: Arc<AtomicUsize>) -> Body {
+    let chunk = Bytes::from(chunk);
+    let rest = futures::stream::iter(0..count).map(move |_| {
+        polled.fetch_add(1, Ordering::SeqCst);
+        Ok(chunk.clone())
+    });
+    Body::Once(Box::pin(
+        futures::stream::iter([Ok(Bytes::from(first))]).chain(rest),
+    ))
+}
+
+/// Standard padded base64, for building an armored header by hand.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for group in bytes.chunks(3) {
+        let n = group
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= group.len() {
+                ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
+}
+
+/// age 0.11 buffers a header whole until it parses. A streamed header that never ends
+/// is refused at a fixed bound, as `OverBudget`, without draining the producer: before,
+/// all 8 MiB was read and held under a 1 KiB budget, then refused only at end of input.
+#[test]
+fn an_endless_header_is_bounded() {
+    let id = Identity::generate();
+    let key = id.to_string().expose_secret().to_string();
+    let (binary_polled, armored_polled) =
+        (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    // Binary: one stanza argument that never ends.
+    let binary = endless_header(
+        b"age-encryption.org/v1\n-> X25519 ".to_vec(),
+        vec![b'A'; 8192],
+        1024,
+        binary_polled.clone(),
+    );
+    // Armored: well-formed 64-column lines whose decoded header never ends.
+    let mut first = b"-----BEGIN AGE ENCRYPTED FILE-----\n".to_vec();
+    let start = [
+        b"age-encryption.org/v1\n-> X25519 A".as_slice(),
+        &[b'A'; 15],
+    ]
+    .concat();
+    first.extend(base64(&start).bytes());
+    first.push(b'\n');
+    let line = format!("{}\n", base64(&[b'A'; 48]));
+    let armored = endless_header(
+        first,
+        line.repeat(128).into_bytes(),
+        1024,
+        armored_polled.clone(),
+    );
+    for (name, body, polled) in [
+        ("binary", binary, binary_polled),
+        ("armored", armored, armored_polled),
+    ] {
+        let k = with_input(key.clone(), body, 1024);
+        let result = block_on(k.issue_body(request("decrypt", reference()), &Capability::root()));
+        assert!(
+            matches!(result, Err(Error::OverBudget { .. })),
+            "{name}: {:?}",
+            result.err()
+        );
+        // 1 MiB of header is 128 binary or about 170 armored chunks; 1024 were offered.
+        let taken = polled.load(Ordering::SeqCst);
+        assert!(taken < 200, "{name}: {taken} chunks read for one header");
+    }
+}
+
+/// The bound leaves room for a real multi-recipient header: 500 recipients open.
+#[test]
+fn a_large_recipient_list_still_opens_streamed() {
+    let ids: Vec<Identity> = (0..500).map(|_| Identity::generate()).collect();
+    let to: Vec<_> = ids.iter().map(Identity::to_public).collect();
+    let last = ids.last().unwrap().to_string().expose_secret().to_string();
+    for ciphertext in [
+        age::seal(b"hello", &to).unwrap(),
+        age::seal_armored(b"hello", &to).unwrap().into_bytes(),
+    ] {
+        let k = with_input(last.clone(), delayed(ciphertext, 4096), 1024);
+        let result = block_on(k.issue(request("decrypt", reference()), &Capability::root()));
+        assert_eq!(result.unwrap().bytes, b"hello");
+    }
+}
