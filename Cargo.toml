@@ -49,6 +49,10 @@ x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 
 [dev-dependencies]
 futures = "0.3" # block_on for the async endpoint tests
+# Standard padded base64, to build an armored age header by hand in `tests/bodies.rs`
+# (the endless-header bound). 0.21.0 is the first release with the `Engine` API; `age`
+# 0.11 already pulls base64 0.21, so nothing new is compiled (auth-drift, ledger #4169).
+base64 = "0.21.0"
 # `tests/library.rs` builds a file the way ikigai-layers' `at_rest.rs` does, with `age`
 # called directly, and opens it with this crate's `age::open`. The same line the library
 # takes; a dev-dependency adds no feature to a consumer's build.
