@@ -8,6 +8,7 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use futures::{executor::block_on, StreamExt};
 use ikigai_core::{
     ArgRef, Body, ByteStream, Bytes, Capability, Endpoint, Error, Exact, FnEndpoint, Invocation,
@@ -613,26 +614,6 @@ fn endless_header(first: Vec<u8>, chunk: Vec<u8>, count: usize, polled: Arc<Atom
     ))
 }
 
-/// Standard padded base64, for building an armored header by hand.
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for group in bytes.chunks(3) {
-        let n = group
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
-        for i in 0..4 {
-            out.push(if i <= group.len() {
-                ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char
-            } else {
-                '='
-            });
-        }
-    }
-    out
-}
-
 /// age 0.11 buffers a header whole until it parses. A streamed header that never ends
 /// is refused at a fixed bound, as `OverBudget`, without draining the producer: before,
 /// all 8 MiB was read and held under a 1 KiB budget, then refused only at end of input.
@@ -650,15 +631,16 @@ fn an_endless_header_is_bounded() {
         binary_polled.clone(),
     );
     // Armored: well-formed 64-column lines whose decoded header never ends.
+    let b64 = &base64::engine::general_purpose::STANDARD;
     let mut first = b"-----BEGIN AGE ENCRYPTED FILE-----\n".to_vec();
     let start = [
         b"age-encryption.org/v1\n-> X25519 A".as_slice(),
         &[b'A'; 15],
     ]
     .concat();
-    first.extend(base64(&start).bytes());
+    first.extend(b64.encode(&start).bytes());
     first.push(b'\n');
-    let line = format!("{}\n", base64(&[b'A'; 48]));
+    let line = format!("{}\n", b64.encode([b'A'; 48]));
     let armored = endless_header(
         first,
         line.repeat(128).into_bytes(),
