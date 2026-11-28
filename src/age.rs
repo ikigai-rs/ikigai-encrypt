@@ -29,7 +29,7 @@
 //!
 //! # Plugin keys
 //!
-//! [`seal_dyn`], [`seal_armored_dyn`] and [`open_dyn`] take age's own key traits,
+//! [`seal_dyn`], `seal_armored_dyn` and [`open_dyn`] take age's own key traits,
 //! [`DynRecipient`] and [`DynIdentity`], so one call can seal to any mix of X25519 and
 //! plugin recipients (`age1se1…`, `age1yubikey1…`, `age1tpm1…`, `age1tag1…`) and open with
 //! an X25519 identity or a plugin one: a Secure Enclave, YubiKey or TPM key.
