@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-encrypt"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Public-key encryption module for ikigai — the dual of ikigai-sign. `urn:encrypt:encrypt` (open) seals bytes to one or more recipient public keys (age / X25519); `urn:encrypt:decrypt` (requires `urn:cap:decrypt`) opens them with a kernel-resolved identity. Keys are age recipients/identities resolved through the kernel — no keygen here (that is the secret module's job). Multi-recipient so an inbox can be encrypted to all of an owner's devices at once."
@@ -37,6 +37,13 @@ futures = { version = "0.3", default-features = false, features = ["std", "async
 # crate's `armor` feature, above. No keygen feature: this module never mints keys (the
 # secret module does); `Identity::generate` is age's core API, not a feature.
 age = { version = "0.11", default-features = false }
+# age's key traits speak `age_core::format::{FileKey, Stanza}`, which `age` does not
+# re-export. `open_dyn` wraps each identity it is handed in an adapter that implements the
+# trait (to tell an identity's failure from the file's), so it names both. Already in the
+# graph through `age` 0.11, at the version it asks for: nothing new is compiled. No
+# `plugin` feature, here or on `age`: this module never runs a plugin binary (a host
+# builds the plugin identity or recipient and passes it in).
+age-core = { version = "0.11", default-features = false }
 
 # The low-order recipient check (ledger #853, bug 1). Both are already in the graph
 # through `age`, at the versions `age` 0.11 asks for, so nothing new is compiled. The
