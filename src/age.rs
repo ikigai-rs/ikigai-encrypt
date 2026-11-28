@@ -27,12 +27,29 @@
 //! assert_eq!(open(&sealed, &identities).unwrap(), b"attack at dawn");
 //! ```
 //!
+//! # Plugin keys
+//!
+//! [`seal_dyn`], `seal_armored_dyn` and [`open_dyn`] take age's own key traits,
+//! [`DynRecipient`] and [`DynIdentity`], so one call can seal to any mix of X25519 and
+//! plugin recipients (`age1se1…`, `age1yubikey1…`, `age1tpm1…`, `age1tag1…`) and open with
+//! an X25519 identity or a plugin one: a Secure Enclave, YubiKey or TPM key.
+//!
+//! This crate is a MODULE, so it never runs a plugin binary. The line falls at
+//! construction: a host-role crate turns on `age`'s `plugin` feature itself and builds
+//! `age::plugin::RecipientPluginV1` or `IdentityPluginV1`, which spawn
+//! `age-plugin-<name>` when they wrap or unwrap. It passes them here as `&dyn DynRecipient`
+//! or `&dyn DynIdentity`, and this crate only calls the trait methods on the value it was
+//! handed. This crate does not turn on `age/plugin`, names no plugin type, and never
+//! spawns a process; with `age` built without `plugin`, nothing in it can.
+//!
 //! Every failure is a typed [`Error`], never a panic: a panic inside `age` is contained
 //! and answered as [`Error::Panicked`]. No error echoes a key, a plaintext or a line of
 //! key text; a bad line is named by its NUMBER.
 
 use std::io::{Read, Write};
 use std::str::FromStr;
+
+use ::age_core::format::{FileKey, Stanza};
 
 /// `Identity::to_string` answers a `SecretString`; this trait reads it. Re-exported from
 /// the `secrecy` crate `age` 0.11 uses, so the two always agree.
@@ -44,6 +61,14 @@ pub use ::age::x25519::Identity;
 /// An X25519 age recipient (`age1…`), re-exported from `age` 0.11. Parse one with
 /// [`parse_recipients`], which refuses a low-order point; `Recipient::from_str` does not.
 pub use ::age::x25519::Recipient;
+/// Any age identity: `age`'s own `Identity` trait, re-exported from `age` 0.11 and named
+/// apart from the X25519 [`Identity`]. An X25519 [`Identity`] is one; so is a plugin
+/// identity a host built (`age::plugin::IdentityPluginV1`). [`open_dyn`] takes them.
+pub use ::age::Identity as DynIdentity;
+/// Any age recipient: `age`'s own `Recipient` trait, re-exported from `age` 0.11 and named
+/// apart from the X25519 [`Recipient`]. An X25519 [`Recipient`] is one; so is a plugin
+/// recipient a host built (`age::plugin::RecipientPluginV1`). [`seal_dyn`] takes them.
+pub use ::age::Recipient as DynRecipient;
 
 /// Why a seal, an open or a parse failed.
 ///
@@ -90,6 +115,11 @@ pub enum Error {
     Rejected(String),
     /// The header opened, and the payload did not authenticate: altered or truncated.
     Corrupt(String),
+    /// An identity given to [`open_dyn`] failed while unwrapping the file key: a plugin
+    /// that is not installed, a device that is not present, a touch or PIN that was
+    /// refused. It says nothing about the file, so it is not [`Error::is_corrupt`].
+    /// `detail` is the identity's reason.
+    Identity(String),
     /// `age` panicked. The panic was contained and nothing was produced; its message is
     /// not carried, because it came from code that held the plaintext or the identity.
     Panicked,
@@ -133,6 +163,11 @@ impl std::fmt::Display for Error {
             Error::NoMatchingKey => f.write_str("no identity matched any of the recipients"),
             Error::Rejected(why) => write!(f, "the header was rejected: {why}"),
             Error::Corrupt(why) => write!(f, "the payload did not open: {why}"),
+            Error::Identity(why) => write!(
+                f,
+                "an identity could not unwrap the file key: {why}; the file was not judged. \
+                 Check that the identity's plugin is installed and its device is present"
+            ),
             Error::Panicked => f.write_str(
                 "the age library panicked; the panic was contained and nothing was produced",
             ),
@@ -154,7 +189,8 @@ fn key_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
 /// Parse an identity file in age's format, as `age-keygen -o key.txt` writes it and
 /// `age -d -i` reads it: one `AGE-SECRET-KEY-1…` per line, blank lines and `#` comments
 /// skipped, any number of identities (any one that matches opens a file), in order.
-/// Plugin identities are not supported (nothing here runs plugins).
+/// Plugin identities are not parsed here (nothing here runs plugins): a host builds one
+/// and passes it to [`open_dyn`].
 ///
 /// A bad line is [`Error::BadKey`] naming its number, never its text; a file with no
 /// identity is [`Error::NoKeys`].
@@ -275,15 +311,23 @@ fn contained<T>(f: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(Err(Error::Panicked))
 }
 
+/// The X25519 recipients as age's trait objects, for the shared sealing path.
+fn as_dyn_recipients(recipients: &[Recipient]) -> Vec<&dyn DynRecipient> {
+    recipients.iter().map(|r| r as &dyn DynRecipient).collect()
+}
+
 /// Encrypt `plaintext` into `out`, which `age` wraps and hands back on finish.
-fn seal_into<W: Write>(plaintext: &[u8], recipients: &[Recipient], out: W) -> Result<W, Error> {
+fn seal_into<W: Write>(
+    plaintext: &[u8],
+    recipients: &[&dyn DynRecipient],
+    out: W,
+) -> Result<W, Error> {
     if recipients.is_empty() {
         return Err(Error::NoRecipients);
     }
     let seal_error = |e: &dyn std::fmt::Display| Error::Seal(e.to_string());
-    let encryptor =
-        ::age::Encryptor::with_recipients(recipients.iter().map(|r| r as &dyn ::age::Recipient))
-            .map_err(|e| seal_error(&e))?;
+    let encryptor = ::age::Encryptor::with_recipients(recipients.iter().copied())
+        .map_err(|e| seal_error(&e))?;
     let mut writer = encryptor.wrap_output(out).map_err(|e| seal_error(&e))?;
     writer.write_all(plaintext).map_err(|e| seal_error(&e))?;
     writer.finish().map_err(|e| seal_error(&e))
@@ -305,6 +349,36 @@ fn seal_into<W: Write>(plaintext: &[u8], recipients: &[Recipient], out: W) -> Re
 /// assert_eq!(seal(b"hello", &[]).unwrap_err(), Error::NoRecipients);
 /// ```
 pub fn seal(plaintext: &[u8], recipients: &[Recipient]) -> Result<Vec<u8>, Error> {
+    seal_dyn(plaintext, &as_dyn_recipients(recipients))
+}
+
+/// Seal `plaintext` as BINARY age to any mix of X25519 and plugin recipients: any one of
+/// their identities opens it. Otherwise exactly [`seal`].
+///
+/// Each recipient is anything that implements age's [`DynRecipient`]: an X25519
+/// [`Recipient`], or a plugin recipient a host built and passed in (see the module's
+/// "Plugin keys"; this crate never runs the plugin binary itself). age's label rule
+/// holds: recipients whose labels differ (a plugin that must be sealed to alone, say)
+/// are refused as [`Error::Seal`], as is a recipient that fails to wrap the file key.
+/// No recipients is [`Error::NoRecipients`].
+///
+/// An X25519 [`Recipient`] here has the same contract as in [`seal`]: parse it with
+/// [`parse_recipients`], which refuses a low-order point (a trait object cannot be
+/// checked here; a panic in age on one is still contained as [`Error::Panicked`]).
+///
+/// ```
+/// use ikigai_encrypt::age::{open_dyn, seal_dyn, DynIdentity, DynRecipient, Identity};
+/// let laptop = Identity::generate();
+/// let desktop = Identity::generate();
+/// let (a, b) = (laptop.to_public(), desktop.to_public());
+/// // A plugin recipient a host built goes in the same slice.
+/// let to: [&dyn DynRecipient; 2] = [&a, &b];
+/// let sealed = seal_dyn(b"hello", &to).unwrap();
+/// assert!(sealed.starts_with(b"age-encryption.org/v1\n"));
+/// let with: [&dyn DynIdentity; 1] = [&desktop];
+/// assert_eq!(open_dyn(&sealed, &with).unwrap(), b"hello");
+/// ```
+pub fn seal_dyn(plaintext: &[u8], recipients: &[&dyn DynRecipient]) -> Result<Vec<u8>, Error> {
     contained(|| {
         seal_into(
             plaintext,
@@ -328,6 +402,25 @@ pub fn seal(plaintext: &[u8], recipients: &[Recipient]) -> Result<Vec<u8>, Error
 /// ```
 #[cfg(feature = "armor")]
 pub fn seal_armored(plaintext: &[u8], recipients: &[Recipient]) -> Result<String, Error> {
+    seal_armored_dyn(plaintext, &as_dyn_recipients(recipients))
+}
+
+/// Seal `plaintext` as ASCII-ARMORED age to any mix of X25519 and plugin recipients.
+/// Otherwise exactly [`seal_dyn`]. Needs the `armor` feature.
+///
+/// ```
+/// use ikigai_encrypt::age::{open, seal_armored_dyn, DynRecipient, Identity};
+/// let me = Identity::generate();
+/// let to = me.to_public();
+/// let text = seal_armored_dyn(b"hello", &[&to as &dyn DynRecipient]).unwrap();
+/// assert!(text.starts_with("-----BEGIN AGE ENCRYPTED FILE-----"));
+/// assert_eq!(open(text.as_bytes(), &[me]).unwrap(), b"hello");
+/// ```
+#[cfg(feature = "armor")]
+pub fn seal_armored_dyn(
+    plaintext: &[u8],
+    recipients: &[&dyn DynRecipient],
+) -> Result<String, Error> {
     use ::age::armor::{ArmoredWriter, Format};
     contained(|| {
         let armor = ArmoredWriter::wrap_output(Vec::new(), Format::AsciiArmor)
@@ -358,16 +451,52 @@ pub fn seal_armored(plaintext: &[u8], recipients: &[Recipient]) -> Result<String
 /// assert!(matches!(open(b"plain text", &[me]).unwrap_err(), Error::NotAge(_)));
 /// ```
 pub fn open(ciphertext: &[u8], identities: &[Identity]) -> Result<Vec<u8>, Error> {
+    let identities: Vec<&dyn DynIdentity> =
+        identities.iter().map(|i| i as &dyn DynIdentity).collect();
+    open_dyn(ciphertext, &identities)
+}
+
+/// Open age `ciphertext` with whichever of `identities` matches, each one anything that
+/// implements age's [`DynIdentity`]: an X25519 [`Identity`], or a plugin identity a host
+/// built and passed in (see the module's "Plugin keys"; this crate never runs the plugin
+/// binary itself). Otherwise exactly [`open`], with one more failure:
+///
+/// [`Error::Identity`]: an identity failed while unwrapping (its plugin is missing, its
+/// device is absent, a touch was refused). It is not [`Error::is_corrupt`], so a caller
+/// does not mistake an unplugged YubiKey for a damaged file. As in age, identities are
+/// tried in order and the first one that answers for a stanza (a key, or a failure) ends
+/// the search, so list the identity that needs no device first.
+///
+/// ```
+/// use ikigai_encrypt::age::{open_dyn, seal, DynIdentity, Error, Identity};
+/// let me = Identity::generate();
+/// let sealed = seal(b"hello", &[me.to_public()]).unwrap();
+/// let other = Identity::generate();
+/// let with: [&dyn DynIdentity; 2] = [&other, &me];
+/// assert_eq!(open_dyn(&sealed, &with).unwrap(), b"hello");
+/// assert_eq!(open_dyn(&sealed, &[&other as &dyn DynIdentity]).unwrap_err(), Error::NoMatchingKey);
+/// assert_eq!(open_dyn(&sealed, &[]).unwrap_err(), Error::NoMatchingKey);
+/// ```
+pub fn open_dyn(ciphertext: &[u8], identities: &[&dyn DynIdentity]) -> Result<Vec<u8>, Error> {
     contained(|| {
         #[cfg(feature = "armor")]
         let input = ::age::armor::ArmoredReader::new(ciphertext);
         #[cfg(not(feature = "armor"))]
         let input = ciphertext;
         let decryptor = ::age::Decryptor::new(input).map_err(|e| Error::NotAge(e.to_string()))?;
+        let failed = std::cell::Cell::new(false);
+        let watched: Vec<Watched<'_>> = identities
+            .iter()
+            .map(|&inner| Watched {
+                inner,
+                failed: &failed,
+            })
+            .collect();
         let mut reader = decryptor
-            .decrypt(identities.iter().map(|i| i as &dyn ::age::Identity))
+            .decrypt(watched.iter().map(|w| w as &dyn DynIdentity))
             .map_err(|e| match e {
                 ::age::DecryptError::NoMatchingKeys => Error::NoMatchingKey,
+                other if failed.get() => Error::Identity(other.to_string()),
                 other => Error::Rejected(other.to_string()),
             })?;
         let mut plaintext = Vec::new();
@@ -376,6 +505,46 @@ pub fn open(ciphertext: &[u8], identities: &[Identity]) -> Result<Vec<u8>, Error
             .map_err(|e| Error::Corrupt(e.to_string()))?;
         Ok(plaintext)
     })
+}
+
+/// An identity handed to age through [`open_dyn`], watched so a failure the IDENTITY
+/// reported can be told from one about the FILE.
+///
+/// age stops at the first identity that answers, so if it answers with an error, that
+/// error is the decrypt's. `failed` records that it came from an identity and was not
+/// `InvalidHeader`. `InvalidHeader` is what an identity answers for a stanza of its type
+/// that is malformed (the only error age's X25519 identity ever gives), so it stays
+/// [`Error::Rejected`], a property of the file. Anything else an identity answers (a
+/// plugin's failure, a missing plugin, I/O) is [`Error::Identity`].
+struct Watched<'a> {
+    inner: &'a dyn DynIdentity,
+    failed: &'a std::cell::Cell<bool>,
+}
+
+impl Watched<'_> {
+    fn watch(
+        &self,
+        answer: Option<Result<FileKey, ::age::DecryptError>>,
+    ) -> Option<Result<FileKey, ::age::DecryptError>> {
+        if let Some(Err(e)) = &answer {
+            if !matches!(e, ::age::DecryptError::InvalidHeader) {
+                self.failed.set(true);
+            }
+        }
+        answer
+    }
+}
+
+impl DynIdentity for Watched<'_> {
+    fn unwrap_stanza(&self, stanza: &Stanza) -> Option<Result<FileKey, ::age::DecryptError>> {
+        self.watch(self.inner.unwrap_stanza(stanza))
+    }
+
+    // Forwarded, not left to the default: an identity may override `unwrap_stanzas` to
+    // check the whole header (age's own docs invite it), and that must still run.
+    fn unwrap_stanzas(&self, stanzas: &[Stanza]) -> Option<Result<FileKey, ::age::DecryptError>> {
+        self.watch(self.inner.unwrap_stanzas(stanzas))
+    }
 }
 
 #[cfg(test)]

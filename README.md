@@ -92,6 +92,32 @@ or any error text a caller can provoke (including passing the identity itself as
 
 ## Changes
 
+### 0.5.2
+
+- **Plugin keys** (ledger #4515): `seal_dyn` and `seal_armored_dyn` seal to any mix of
+  X25519 and plugin recipients; `open_dyn` opens with any identity, X25519 or plugin. Both
+  take age's own traits, re-exported as `DynRecipient` and `DynIdentity`. The host builds
+  the plugin identity or recipient (`age::plugin::*PluginV1`, which runs the
+  `age-plugin-<name>` binary); this module never spawns it and does not turn on
+  `age/plugin`.
+- `Error::Identity`: an identity's own failure while unwrapping, such as a missing plugin
+  or an absent device. It is not `is_corrupt`, so a caller does not treat an unplugged
+  YubiKey as a damaged file. A malformed stanza stays `Rejected`.
+- `seal`, `seal_armored` and `open` are unchanged and now call the `_dyn` forms.
+- `age-core` 0.11 is a direct dependency for `FileKey` and `Stanza` in age's traits. It
+  was already in the graph through `age`, so nothing new is compiled.
+- Patch release: additive only. `Error` is `#[non_exhaustive]`, so the new variant is
+  not breaking.
+
+#### Upgrade from older versions
+
+Nothing to change: `seal`, `seal_armored`, `open` and every existing error keep their
+signatures and wording. To use plugin keys, turn on `age`'s `plugin` feature in the host,
+build `age::plugin::RecipientPluginV1` / `IdentityPluginV1` there, and pass them to
+`seal_dyn` / `open_dyn` with any X25519 keys, as `&dyn DynRecipient` / `&dyn DynIdentity`.
+A caller that matches `age::Error` exhaustively already needs a `_` arm and gets
+`Identity` there.
+
 ### 0.5.1
 
 - A streamed decrypt bounds the age header at 1 MiB. age 0.11 holds the header in one
@@ -226,7 +252,7 @@ The endpoints are one face; `ikigai_encrypt::age` is the other, with no kernel, 
 that seals its own files. Take it without the defaults and nothing of the kernel is linked:
 
 ```toml
-ikigai-encrypt = { version = "0.3.0", default-features = false }   # binary age only
+ikigai-encrypt = { version = "0.5.2", default-features = false }   # binary age only
 ```
 
 ```rust
@@ -245,6 +271,30 @@ assert!(open(&sealed[..sealed.len() - 1], &identities).unwrap_err().is_corrupt()
 With `armor` (on by default), `seal_armored` writes `-----BEGIN AGE ENCRYPTED FILE-----`
 text and `open` reads either form. The module is named for the format, so another one (HPKE,
 RFC 9180) would sit beside it as `ikigai_encrypt::hpke`.
+
+### Plugin keys (Secure Enclave, YubiKey, TPM)
+
+`seal_dyn`, `seal_armored_dyn` and `open_dyn` take age's own key traits, re-exported as
+`DynRecipient` and `DynIdentity`: one seal can name any mix of X25519 recipients and plugin
+recipients (`age1se1…`, `age1yubikey1…`, `age1tpm1…`, `age1tag1…`), and an open can use an
+X25519 identity or a plugin one, so a service reads its secrets with no unlock prompt.
+
+```rust,ignore
+// In the HOST, which turns on `age`'s `plugin` feature and may run `age-plugin-se`:
+let enclave = age::plugin::RecipientPluginV1::new("se", &[recipient], &[], callbacks)?;
+let laptop = parse_recipients(laptop_pub)?.remove(0);
+let sealed = ikigai_encrypt::age::seal_dyn(bytes, &[&laptop, &enclave])?;
+
+let identity = age::plugin::IdentityPluginV1::new("se", &[plugin_identity], callbacks)?;
+let plain = ikigai_encrypt::age::open_dyn(&sealed, &[&identity])?;
+```
+
+This crate never runs a plugin. Building a plugin identity or recipient, and the
+`age-plugin-<name>` process it spawns, is the host's: a host-role crate builds it and passes
+it in, and this module only calls the trait method on the value it was handed. It does not
+turn on `age/plugin` and names no plugin type. An identity that fails while unwrapping (its
+plugin is missing, its device absent) is `Error::Identity`, which is not `is_corrupt`.
+Identities are tried in order and the first that answers ends the search, as in age.
 
 ## Using it from a host
 

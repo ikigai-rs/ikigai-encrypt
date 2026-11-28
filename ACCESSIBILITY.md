@@ -27,6 +27,10 @@ person reads is its refusals and errors.
 - **The library's errors** (`src/age.rs`, the `Display` of `age::Error`): text descriptions,
   such as `the recipient on line 3 is a low-order X25519 point; anyone could open a file sealed
   to it, so it is refused`.
+- **An identity's failure** (`Error::Identity`, from `open_dyn`): `an identity could not
+  unwrap the file key: …; the file was not judged. Check that the identity's plugin is
+  installed and its device is present`. The detail after the colon is the plugin's or
+  `age`'s wording.
 - **Its outputs** are not meant to be read: `urn:encrypt:encrypt` answers ASCII-armored age
   ciphertext (`text/plain`), and `urn:encrypt:decrypt` answers the plaintext as
   `application/octet-stream`, whatever the sender sealed.
@@ -88,7 +92,8 @@ Confirmed by reading the source on 2026-11-12:
 - **Some sentences end in the `age` library's own wording.** `sealing failed: …`, `not age
   ciphertext: …`, `the header was rejected: …`, `the payload did not open: …` and a bad key
   line's detail carry the dependency's error text, which this repository does not control and
-  which may not say what to do.
+  which may not say what to do. The same holds for the detail inside `Error::Identity`,
+  which comes from a plugin; this repository's sentence around it gives the next step.
 - **A contained panic says nothing actionable**: `the age library panicked; the panic was
   contained and nothing was produced` does not say whether to retry or what input caused it.
 - Every message is English only.
@@ -118,3 +123,4 @@ through [private vulnerability reporting](https://github.com/ikigai-rs/ikigai-en
 |---|---|
 | 2026-10-31 | First version. |
 | 2026-11-12 | Added Pass / Fail / Blocked results, current main test evidence, review scope and explicit unrun host and assistive-technology checks. |
+| 2026-11-27 | Listed `Error::Identity` (plugin keys, ledger #4515) and its dependency-supplied detail. |
